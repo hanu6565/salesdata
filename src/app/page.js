@@ -1804,79 +1804,81 @@ export default function Home() {
       {/* ----------------------------------------------------
           TOP NAVIGATION BAR
           ---------------------------------------------------- */}
-      <header className="sticky top-0 z-30 border-b border-white/5 bg-[#090b11]/90 backdrop-blur-md px-6 py-4 flex items-center justify-between">
-        <div className="flex items-center gap-3">
-          <div className="bg-gradient-to-tr from-indigo-500 to-cyan-500 p-2 rounded-xl text-white shadow-[0_0_15px_rgba(99,102,241,0.4)]">
-            <Store className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="text-xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent">
-              OKPOS SalesHub
-            </h1>
-            <p className="text-[11px] text-indigo-400 font-medium tracking-wide">외식 프랜차이즈 다지점 매출 분석 대시보드</p>
+      <header className="sticky top-0 z-30 border-b border-white/5 bg-[#090b11]/90 backdrop-blur-md px-4 py-3 lg:px-6 lg:py-4 flex flex-col md:flex-row gap-4 items-center justify-between">
+        <div className="flex items-center gap-3 w-full md:w-auto justify-between md:justify-start">
+          <div className="flex items-center gap-3">
+            <div className="bg-gradient-to-tr from-indigo-500 to-cyan-500 p-2 rounded-xl text-white shadow-[0_0_15px_rgba(99,102,241,0.4)] flex-shrink-0">
+              <Store className="w-5 h-5 md:w-6 md:h-6" />
+            </div>
+            <div>
+              <h1 className="text-lg md:text-xl font-bold bg-gradient-to-r from-white via-slate-200 to-slate-400 bg-clip-text text-transparent leading-none">
+                OKPOS SalesHub
+              </h1>
+              <p className="text-[9px] md:text-[11px] text-indigo-400 font-medium tracking-wide mt-1">외식 프랜차이즈 다지점 매출 분석 대시보드</p>
+            </div>
           </div>
         </div>
 
         {/* Global Navigation Tabs */}
-        <div className="flex items-center bg-[#131722] p-1 rounded-xl border border-white/5">
+        <div className="flex items-center bg-[#131722] p-1 rounded-xl border border-white/5 w-full md:w-auto overflow-x-auto justify-start md:justify-center scrollbar-none">
           <button
             onClick={() => setGlobalTab("dashboard")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex items-center gap-1.5 md:gap-2 px-3 py-1.5 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold transition-all whitespace-nowrap ${
               globalTab === "dashboard"
                 ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <BarChart2 className="w-4 h-4" />
-            통합 대시보드
+            <BarChart2 className="w-3.5 h-3.5 md:w-4 md:h-4 flex-shrink-0" />
+            대시보드
           </button>
           <button
             onClick={() => setGlobalTab("pivot")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex items-center gap-1.5 md:gap-2 px-3 py-1.5 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold transition-all whitespace-nowrap ${
               globalTab === "pivot"
                 ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Table className="w-4 h-4" />
-            상세 피벗 테이블
+            <Table className="w-3.5 h-3.5 md:w-4 md:h-4 flex-shrink-0" />
+            피벗 테이블
           </button>
           <button
             onClick={() => setGlobalTab("upload")}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all ${
+            className={`flex items-center gap-1.5 md:gap-2 px-3 py-1.5 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold transition-all whitespace-nowrap ${
               globalTab === "upload"
                 ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
                 : "text-slate-400 hover:text-slate-200"
             }`}
           >
-            <Upload className="w-4 h-4" />
-            데이터 업로드 허브
+            <Upload className="w-3.5 h-3.5 md:w-4 md:h-4 flex-shrink-0" />
+            업로드 허브
           </button>
         </div>
 
         {/* Quick Actions */}
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 w-full md:w-auto justify-between md:justify-start">
           <button
             onClick={() => handleDownloadSampleExcel("금막창 종로점", "2026-08")}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all"
+            className="flex items-center gap-1 px-2.5 py-1.5 md:px-3 md:py-1.5 rounded-lg text-[10px] md:text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/25 hover:bg-emerald-500/20 transition-all flex-1 md:flex-initial justify-center whitespace-nowrap"
             title="테스트용 OKPOS 엑셀 파일을 다운로드합니다."
           >
-            <Download className="w-3.5 h-3.5" />
-            샘플 엑셀 다운로드
+            <Download className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>샘플 다운</span>
           </button>
           <button
             onClick={handleOpenAddStore}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all"
+            className="flex items-center gap-1 px-2.5 py-1.5 md:px-3 md:py-1.5 rounded-lg text-[10px] md:text-xs font-semibold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-500/20 transition-all flex-1 md:flex-initial justify-center whitespace-nowrap"
           >
-            <Plus className="w-3.5 h-3.5" />
-            신규 매장 추가
+            <Plus className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>매장 추가</span>
           </button>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/25 transition-all"
+            className="flex items-center gap-1 px-2.5 py-1.5 md:px-3 md:py-1.5 rounded-lg text-[10px] md:text-xs font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20 hover:bg-rose-500/25 transition-all flex-1 md:flex-initial justify-center whitespace-nowrap"
           >
-            <Lock className="w-3.5 h-3.5" />
-            보안 로그아웃
+            <Lock className="w-3.5 h-3.5 flex-shrink-0" />
+            <span>로그아웃</span>
           </button>
         </div>
       </header>
@@ -1885,8 +1887,8 @@ export default function Home() {
           SUB BAR: STORES CAROUSEL & TABS
           ---------------------------------------------------- */}
       {globalTab === "dashboard" && (
-        <div className="bg-[#0b0e17] border-b border-white/5 px-6 py-2.5 flex items-center justify-between gap-4">
-          <div className="flex-1 overflow-x-auto flex items-center gap-2 pr-4 scrollbar-thin">
+        <div className="bg-[#0b0e17] border-b border-white/5 px-4 py-2.5 lg:px-6 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+          <div className="w-full lg:flex-1 overflow-x-auto flex items-center gap-2 pb-2 lg:pb-0 pr-4 scrollbar-thin">
             <button
               onClick={() => setSelectedStoreId("total")}
               className={`flex-shrink-0 px-4 py-1.5 rounded-lg text-xs font-bold transition-all ${
@@ -1936,27 +1938,29 @@ export default function Home() {
           </div>
 
           {/* Quick Filters */}
-          <div className="flex items-center gap-2 flex-shrink-0 flex-wrap">
+          <div className="flex items-center gap-2 w-full lg:w-auto justify-start sm:justify-between lg:justify-start flex-wrap">
             {/* Period */}
-            <div className="flex items-center gap-2 flex-wrap">
-              <div className="flex items-center bg-[#131722] rounded-lg px-2.5 py-1 border border-white/5 text-xs">
-                <Calendar className="w-3.5 h-3.5 text-indigo-400 mr-1.5" />
-                <select
-                  value={selectedPeriod}
-                  onChange={(e) => handlePeriodDropdownChange(e.target.value)}
-                  className="bg-transparent border-none text-slate-300 font-semibold focus:outline-none cursor-pointer"
-                >
-                  <option value="all" className="bg-[#131722]">전체 기간</option>
-                  {availablePeriods.map(p => (
-                    <option key={p} value={p} className="bg-[#131722]">
-                      {p.replace("-", "년 ")}월
-                    </option>
-                  ))}
-                  <option value="custom" className="bg-[#131722]">직접 지정</option>
-                </select>
+            <div className="flex items-center gap-2 flex-wrap flex-1 sm:flex-initial">
+              <div className="flex items-center bg-[#131722] rounded-lg px-2.5 py-1 border border-white/5 text-xs flex-1 sm:flex-initial justify-between sm:justify-start">
+                <div className="flex items-center">
+                  <Calendar className="w-3.5 h-3.5 text-indigo-400 mr-1.5" />
+                  <select
+                    value={selectedPeriod}
+                    onChange={(e) => handlePeriodDropdownChange(e.target.value)}
+                    className="bg-transparent border-none text-slate-300 font-semibold focus:outline-none cursor-pointer"
+                  >
+                    <option value="all" className="bg-[#131722]">전체 기간</option>
+                    {availablePeriods.map(p => (
+                      <option key={p} value={p} className="bg-[#131722]">
+                        {p.replace("-", "년 ")}월
+                      </option>
+                    ))}
+                    <option value="custom" className="bg-[#131722]">직접 지정</option>
+                  </select>
+                </div>
               </div>
 
-              <div className="flex items-center bg-[#131722] rounded-lg px-2 py-0.5 border border-white/5 text-xs gap-1">
+              <div className="flex items-center bg-[#131722] rounded-lg px-2 py-0.5 border border-white/5 text-xs gap-1 flex-1 sm:flex-initial justify-center">
                 <input
                   type="date"
                   value={startDate}
@@ -1976,19 +1980,21 @@ export default function Home() {
             </div>
 
             {/* Category */}
-            <div className="flex items-center bg-[#131722] rounded-lg px-2.5 py-1 border border-white/5 text-xs">
-              <Filter className="w-3.5 h-3.5 text-indigo-400 mr-1.5" />
-              <select
-                value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
-                className="bg-transparent border-none text-slate-300 font-semibold focus:outline-none cursor-pointer"
-              >
-                <option value="all" className="bg-[#131722]">전체 대분류</option>
-                <option value="메인메뉴" className="bg-[#131722]">메인메뉴</option>
-                <option value="식사류/정식류" className="bg-[#131722]">식사류 / 정식류</option>
-                <option value="주류/음료" className="bg-[#131722]">주류 / 음료</option>
-                <option value="사이드/기타" className="bg-[#131722]">사이드 / 기타</option>
-              </select>
+            <div className="flex items-center bg-[#131722] rounded-lg px-2.5 py-1 border border-white/5 text-xs flex-1 sm:flex-initial justify-between sm:justify-start">
+              <div className="flex items-center">
+                <Filter className="w-3.5 h-3.5 text-indigo-400 mr-1.5" />
+                <select
+                  value={selectedCategory}
+                  onChange={(e) => setSelectedCategory(e.target.value)}
+                  className="bg-transparent border-none text-slate-300 font-semibold focus:outline-none cursor-pointer"
+                >
+                  <option value="all" className="bg-[#131722]">전체 대분류</option>
+                  <option value="메인메뉴" className="bg-[#131722]">메인메뉴</option>
+                  <option value="식사류/정식류" className="bg-[#131722]">식사류 / 정식류</option>
+                  <option value="주류/음료" className="bg-[#131722]">주류 / 음료</option>
+                  <option value="사이드/기타" className="bg-[#131722]">사이드 / 기타</option>
+                </select>
+              </div>
             </div>
           </div>
         </div>
@@ -2298,38 +2304,38 @@ export default function Home() {
               </div>
 
               {/* Period statistics */}
-              <div className="flex items-center gap-6">
-                <div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">{totalSummary.currentMonthLabel}</p>
-                  <p className="text-lg font-extrabold text-indigo-400 mt-0.5">
+              <div className="grid grid-cols-2 md:flex md:items-center gap-4 md:gap-6 mt-4 md:mt-0 w-full md:w-auto">
+                <div className="bg-white/2 md:bg-transparent p-2.5 md:p-0 rounded-xl border border-white/5 md:border-none">
+                  <p className="text-[9px] md:text-[10px] font-bold text-slate-500 uppercase tracking-wider">{totalSummary.currentMonthLabel}</p>
+                  <p className="text-base md:text-lg font-extrabold text-indigo-400 mt-0.5">
                     {formatRawWon(totalSummary.currentMonthSalesSum)}
                   </p>
                 </div>
                 {totalSummary.currentMonthEstimatedSales > 0 && (
                   <>
-                    <div className="w-[1px] h-8 bg-white/10"></div>
-                    <div>
-                      <p className="text-[10px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
+                    <div className="hidden md:block w-[1px] h-8 bg-white/10"></div>
+                    <div className="bg-white/2 md:bg-transparent p-2.5 md:p-0 rounded-xl border border-white/5 md:border-none">
+                      <p className="text-[9px] md:text-[10px] font-bold text-indigo-400 uppercase tracking-wider flex items-center gap-1">
                         <TrendingUp className="w-3 h-3 text-indigo-400" />
                         {totalSummary.currentMonthNum}월 예상 매출
                       </p>
-                      <p className="text-lg font-black text-white mt-0.5 cursor-help" title={`${totalSummary.currentMonthNum}월 1일~${totalSummary.currentMonthDays}일까지의 일평균 매출(${formatRawWon(Math.round(totalSummary.currentMonthAvgSales))})을 한 달(${totalSummary.currentMonthTotalDays}일)로 환산한 예상 총매출입니다.`}>
+                      <p className="text-base md:text-lg font-black text-white mt-0.5 cursor-help" title={`${totalSummary.currentMonthNum}월 1일~${totalSummary.currentMonthDays}일까지의 일평균 매출(${formatRawWon(Math.round(totalSummary.currentMonthAvgSales))})을 한 달(${totalSummary.currentMonthTotalDays}일)로 환산한 예상 총매출입니다.`}>
                         {formatRawWon(Math.round(totalSummary.currentMonthEstimatedSales))}
                       </p>
                     </div>
                   </>
                 )}
-                <div className="w-[1px] h-8 bg-white/10"></div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">일평균 매출</p>
-                  <p className="text-lg font-bold text-white mt-0.5">
+                <div className="hidden md:block w-[1px] h-8 bg-white/10"></div>
+                <div className="bg-white/2 md:bg-transparent p-2.5 md:p-0 rounded-xl border border-white/5 md:border-none">
+                  <p className="text-[9px] md:text-[10px] font-bold text-slate-500 uppercase tracking-wider">일평균 매출</p>
+                  <p className="text-base md:text-lg font-bold text-white mt-0.5">
                     {formatRawWon(totalSummary.dailyAvgSales)}
                   </p>
                 </div>
-                <div className="w-[1px] h-8 bg-white/10"></div>
-                <div>
-                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">최고 매출일 ({totalSummary.peakDay})</p>
-                  <p className="text-lg font-bold text-emerald-400 mt-0.5">
+                <div className="hidden md:block w-[1px] h-8 bg-white/10"></div>
+                <div className="bg-white/2 md:bg-transparent p-2.5 md:p-0 rounded-xl border border-white/5 md:border-none">
+                  <p className="text-[9px] md:text-[10px] font-bold text-slate-500 uppercase tracking-wider">최고 매출일 ({totalSummary.peakDay})</p>
+                  <p className="text-base md:text-lg font-bold text-emerald-400 mt-0.5">
                     {formatRawWon(totalSummary.peakSales)}
                   </p>
                 </div>
