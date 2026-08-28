@@ -133,17 +133,49 @@ function parseDateString(val) {
       return null;
     }
   }
-  const str = String(val || "").trim();
-  // Match YYYY-MM-DD
-  const m1 = str.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})$/);
+  
+  let str = String(val || "").trim();
+  if (!str) return null;
+
+  // Remove time part if exists (e.g. "2024-11-01 12:00:00" -> "2024-11-01")
+  const timeIndex = str.search(/\s+\d{1,2}:\d{2}/);
+  if (timeIndex !== -1) {
+    str = str.substring(0, timeIndex).trim();
+  }
+
+  // Pattern 1: YYYY-MM-DD or YYYY/MM/DD, optionally followed by (Mon) or (월)
+  // E.g., "2024-11-01 (금)", "2024/11/01"
+  const m1 = str.match(/^(\d{2,4})[-/](\d{1,2})[-/](\d{1,2})(?:\s*\([^)]+\))?$/);
   if (m1) {
-    return `${m1[1]}-${m1[2].padStart(2, "0")}-${m1[3].padStart(2, "0")}`;
+    let year = m1[1];
+    if (year.length === 2) year = "20" + year;
+    return `${year}-${m1[2].padStart(2, "0")}-${m1[3].padStart(2, "0")}`;
   }
-  // Match YYYYMMDD
-  const m2 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+
+  // Pattern 2: YYYY.MM.DD or YY.MM.DD, optionally with spaces and trailing dot
+  // E.g., "2024.11.01", "24. 11. 01.", "2024.11.01 (금)"
+  const m2 = str.match(/^(\d{2,4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?(?:\s*\([^)]+\))?$/);
   if (m2) {
-    return `${m2[1]}-${m2[2]}-${m2[3]}`;
+    let year = m2[1];
+    if (year.length === 2) year = "20" + year;
+    return `${year}-${m2[2].padStart(2, "0")}-${m2[3].padStart(2, "0")}`;
   }
+
+  // Pattern 3: YYYY년 MM월 DD일 or YY년 MM월 DD일
+  // E.g., "2024년 11월 01일", "24년 11월 1일"
+  const m3 = str.match(/^(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일?$/);
+  if (m3) {
+    let year = m3[1];
+    if (year.length === 2) year = "20" + year;
+    return `${year}-${m3[2].padStart(2, "0")}-${m3[3].padStart(2, "0")}`;
+  }
+
+  // Pattern 4: YYYYMMDD (8 digits)
+  const m4 = str.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (m4) {
+    return `${m4[1]}-${m4[2]}-${m4[3]}`;
+  }
+
   return null;
 }
 
@@ -349,20 +381,9 @@ export function parseOKPOSExcel(file) {
               continue; 
             }
 
-            let formattedDate = dateStr;
-            if (rawDate instanceof Date) {
-              try {
-                const y = rawDate.getFullYear();
-                const m = String(rawDate.getMonth() + 1).padStart(2, "0");
-                const d = String(rawDate.getDate()).padStart(2, "0");
-                formattedDate = `${y}-${m}-${d}`;
-              } catch (err) {
-                formattedDate = dateStr;
-              }
-            } else if (dateStr.length === 8 && !dateStr.includes("-") && /^\d+$/.test(dateStr)) {
-              formattedDate = `${dateStr.substring(0, 4)}-${dateStr.substring(4, 6)}-${dateStr.substring(6, 8)}`;
-            } else if (dateStr.includes("/")) {
-              formattedDate = dateStr.replace(/\//g, "-");
+            let formattedDate = parseDateString(rawDate) || parseDateString(dateStr);
+            if (!formattedDate) {
+              formattedDate = dateStr;
             }
 
             // Save the last valid formatted date
