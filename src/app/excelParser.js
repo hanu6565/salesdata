@@ -13,14 +13,24 @@ export function parseFileNameInfo(fileName, existingStores = []) {
   let year = null;
   let month = null;
   
-  // Pattern A: "26년 7월" or "2026년 07월" or "26년07월"
-  const koreanDateRegex = /(\d{2,4})\s*년\s*(\d{1,2})\s*월/;
-  // Pattern B: "2026-07" or "26-07" or "2026_07"
-  const hyphenDateRegex = /(\d{2,4})[-_](\d{1,2})/;
-  
-  let dateMatch = nameWithoutExt.match(koreanDateRegex);
-  if (!dateMatch) {
-    dateMatch = nameWithoutExt.match(hyphenDateRegex);
+  const dateRegexes = [
+    /(\d{2,4})\s*년\s*(\d{1,2})\s*월/,       // E.g. "24년 11월", "2024년 11월"
+    /(\d{2,4})[-_](\d{1,2})/,               // E.g. "24-11", "2024_11"
+    /(\d{2,4})\s*\.\s*(\d{1,2})/,           // E.g. "24.11", "2024. 11"
+    /(\d{2,4})\s+(\d{1,2})/                 // E.g. "24 11", "2024 11"
+  ];
+
+  let dateMatch = null;
+  for (const regex of dateRegexes) {
+    const match = nameWithoutExt.match(regex);
+    if (match) {
+      const mVal = parseInt(match[2], 10);
+      // Ensure month is within valid range to avoid false positives (e.g. matching store numbers)
+      if (mVal >= 1 && mVal <= 12) {
+        dateMatch = match;
+        break;
+      }
+    }
   }
 
   if (dateMatch) {
