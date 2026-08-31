@@ -441,3 +441,177 @@ export function parseOKPOSExcel(file) {
     reader.readAsBinaryString(file);
   });
 }
+
+/**
+ * Parses Monthly Cost / Profit & Loss statement workbook.
+ */
+export function parseCostExcel(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = (e) => {
+      try {
+        const data = e.target.result;
+        const workbook = XLSX.read(data, { type: "binary", cellDates: true });
+        const parsedData = {
+          initialCost: null,
+          months: {},
+          trend: []
+        };
+        
+        workbook.SheetNames.forEach(sheetName => {
+          const sheet = workbook.Sheets[sheetName];
+          const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+          if (allRows.length === 0) return;
+          
+          const title = allRows[0][0] || "";
+          
+          // 1. Initial Setup Cost Sheet
+          if (sheetName === "2510" || String(title).includes("초기비용")) {
+            const initialCost = {
+              title: String(title).trim(),
+              period: "2025-10",
+              categories: {},
+              totalSum: 0
+            };
+            
+            const headersRow = allRows[1] || [];
+            const catCount = Math.floor(headersRow.length / 3);
+            
+            for (let k = 0; k < catCount; k++) {
+              const name = headersRow[3 * k];
+              if (name && name !== "최종합계") {
+                initialCost.categories[name] = {
+                  sum: Number(headersRow[3 * k + 1]) || 0,
+                  ratio: Number(headersRow[3 * k + 2]) || 0,
+                  items: []
+                };
+              } else if (name === "최종합계") {
+                initialCost.totalSum = Number(headersRow[3 * k + 1]) || 0;
+              }
+            }
+            
+            for (let r = 2; r < allRows.length; r++) {
+              const row = allRows[r];
+              if (!row || row.length === 0) continue;
+              
+              for (let k = 0; k < catCount; k++) {
+                const catName = headersRow[3 * k];
+                if (!catName || catName === "최종합계") continue;
+                
+                const itemName = row[3 * k];
+                const itemVal = row[3 * k + 1];
+                const itemRatio = row[3 * k + 2];
+                
+                if (itemName !== undefined && itemName !== null && String(itemName).trim() !== "") {
+                  initialCost.categories[catName].items.push({
+                    name: String(itemName).trim(),
+                    value: Number(itemVal) || 0,
+                    ratio: Number(itemRatio) || 0
+                  });
+                }
+              }
+            }
+            parsedData.initialCost = initialCost;
+          }
+          // 2. Simple Trend Sheet
+          else if (sheetName === "간편 손익분석표" || String(title).includes("간편손익")) {
+            const headersRow = allRows[2] || [];
+            for (let r = 3; r < allRows.length; r++) {
+              const row = allRows[r];
+              if (!row || row.length === 0 || !row[0]) continue;
+              
+              const monthStr = String(row[0]).trim();
+              if (monthStr === "null" || monthStr === "" || row[1] === "" || row[1] === null) continue;
+              
+              const trendRow = {
+                month: monthStr,
+                sales: Number(row[1]) || 0,
+                foodCostRatio: Number(row[3]) || 0,
+                laborCostRatio: Number(row[4]) || 0,
+                rentRatio: Number(row[6]) || 0,
+                adminRatio: Number(row[7]) || 0,
+                taxRatio: Number(row[9]) || 0,
+                insuranceRatio: Number(row[10]) || 0,
+                feeRatio: Number(row[11]) || 0,
+                marketingRatio: Number(row[13]) || 0,
+                loanRatio: Number(row[15]) || 0,
+                netProfit: Number(row[17]) || 0,
+                netProfitRatio: Number(row[18]) || 0
+              };
+              parsedData.trend.push(trendRow);
+            }
+          }
+          // 3. Monthly P&L Sheet
+          else if (/^\d{4}$/.test(sheetName)) {
+            const year = "20" + sheetName.substring(0, 2);
+            const month = sheetName.substring(2, 4);
+            const period = `${year}-${month}`;
+            
+            const sales = Number(allRows[0][4]) || 0;
+            const memo = String(allRows[0][6] || "").trim();
+            
+            const monthData = {
+              title: String(title).trim(),
+              period,
+              sales,
+              memo,
+              categories: {},
+              netProfit: 0,
+              netProfitRatio: 0
+            };
+            
+            const headersRow = allRows[1] || [];
+            const catCount = Math.floor(headersRow.length / 3);
+            
+            for (let k = 0; k < catCount; k++) {
+              const name = headersRow[3 * k];
+              if (name) {
+                monthData.categories[name] = {
+                  sum: Number(headersRow[3 * k + 1]) || 0,
+                  ratio: Number(headersRow[3 * k + 2]) || 0,
+                  items: []
+                };
+                if (name === "손익") {
+                  monthData.netProfit = Number(headersRow[3 * k + 1]) || 0;
+                  monthData.netProfitRatio = Number(headersRow[3 * k + 2]) || 0;
+                }
+              }
+            }
+            
+            for (let r = 2; r < allRows.length; r++) {
+              const row = allRows[r];
+              if (!row || row.length === 0) continue;
+              
+              for (let k = 0; k < catCount; k++) {
+                const catName = headersRow[3 * k];
+                if (!catName) continue;
+                
+                const itemName = row[3 * k];
+                const itemVal = row[3 * k + 1];
+                const itemRatio = row[3 * k + 2];
+                
+                if (itemName !== undefined && itemName !== null && String(itemName).trim() !== "") {
+                  monthData.categories[catName].items.push({
+                    name: String(itemName).trim(),
+                    value: Number(itemVal) || 0,
+                    ratio: Number(itemRatio) || 0
+                  });
+                }
+              }
+            }
+            parsedData.months[period] = monthData;
+          }
+        });
+        
+        resolve(parsedData);
+      } catch (err) {
+        reject(err);
+      }
+    };
+    
+    reader.onerror = (e) => reject(new Error("파일 읽기 실패"));
+    reader.readAsBinaryString(file);
+  });
+}
+

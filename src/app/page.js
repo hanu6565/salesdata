@@ -59,8 +59,122 @@ import {
   ZAxis
 } from "recharts";
 import { INITIAL_STORES, generateMockSalesData } from "./mockData";
-import { parseOKPOSExcel, parseFileNameInfo } from "./excelParser";
+import { parseOKPOSExcel, parseFileNameInfo, parseCostExcel } from "./excelParser";
+import { DEFAULT_COST_DATA } from "./mockCostData";
 import * as XLSX from "xlsx";
+
+// Helper to filter out unwanted cost vendors (cards, green hygiene, Lotte kitchen, etc.)
+const cleanCostData = (data) => {
+  if (!data) return {};
+  const EXCLUDED_NAMES = [
+    "삼성카드", "신한카드", "국민카드", "그린위생", "샐러드", "네이버쇼핑", 
+    "새우튀김", "외식중앙회쌀", "외식중앙회 쌀", "롯데주방", 
+    "클레오파트라소금", "클레오소금"
+  ];
+
+  const shouldExclude = (name) => {
+    if (!name) return false;
+    const cleanName = name.trim().replace(/\s+/g, "");
+    return EXCLUDED_NAMES.some(ex => {
+      const cleanEx = ex.replace(/\s+/g, "");
+      return cleanName.includes(cleanEx) || cleanEx.includes(cleanName);
+    });
+  };
+
+  const cleaned = JSON.parse(JSON.stringify(data)); // Deep clone
+  
+  Object.keys(cleaned).forEach(storeId => {
+    const storeData = cleaned[storeId];
+    if (!storeData) return;
+    
+    // Clean initialCost
+    if (storeData.initialCost) {
+      let newTotalSum = 0;
+      Object.keys(storeData.initialCost.categories || {}).forEach(catName => {
+        const cat = storeData.initialCost.categories[catName];
+        if (cat && cat.items) {
+          cat.items = cat.items.filter(item => item && item.name && !shouldExclude(item.name));
+          cat.sum = cat.items.reduce((sum, item) => sum + (item.value || 0), 0);
+          newTotalSum += cat.sum;
+        }
+      });
+      storeData.initialCost.totalSum = newTotalSum;
+      // Recalculate ratios
+      Object.keys(storeData.initialCost.categories || {}).forEach(catName => {
+        const cat = storeData.initialCost.categories[catName];
+        cat.ratio = newTotalSum > 0 ? cat.sum / newTotalSum : 0;
+        if (cat.items) {
+          cat.items.forEach(item => {
+            if (item) {
+              item.ratio = newTotalSum > 0 ? (item.value || 0) / newTotalSum : 0;
+            }
+          });
+        }
+      });
+    }
+    
+    // Clean months
+    if (storeData.months) {
+      Object.keys(storeData.months).forEach(period => {
+        const mData = storeData.months[period];
+        if (!mData) return;
+        const sales = mData.sales || 0;
+        let totalExpenses = 0;
+        
+        Object.keys(mData.categories || {}).forEach(catName => {
+          if (catName === "손익") return;
+          const cat = mData.categories[catName];
+          if (cat && cat.items) {
+            cat.items = cat.items.filter(item => item && item.name && !shouldExclude(item.name));
+            cat.sum = cat.items.reduce((sum, item) => sum + (item.value || 0), 0);
+            totalExpenses += cat.sum;
+          }
+        });
+        
+        // Recalculate netProfit
+        mData.netProfit = sales - totalExpenses;
+        mData.netProfitRatio = sales > 0 ? mData.netProfit / sales : 0;
+        
+        // Update categories ratios
+        Object.keys(mData.categories || {}).forEach(catName => {
+          const cat = mData.categories[catName];
+          if (!cat) return;
+          if (catName === "손익") {
+            cat.sum = mData.netProfit;
+            cat.ratio = mData.netProfitRatio;
+            if (cat.items) {
+              cat.items = cat.items.filter(item => item && item.name && !shouldExclude(item.name));
+              const nonProfitItems = cat.items.filter(item => item && item.name && !item.name.includes("최종수익") && !item.name.includes("손익"));
+              const loanSum = nonProfitItems.reduce((sum, item) => sum + (item.value || 0), 0);
+              const finalProfit = mData.netProfit - loanSum;
+              cat.items.forEach(item => {
+                if (!item) return;
+                if (item.name.includes("최종수익") || item.name.includes("손익")) {
+                  item.value = finalProfit;
+                  item.ratio = sales > 0 ? finalProfit / sales : 0;
+                } else {
+                  item.ratio = sales > 0 ? (item.value || 0) / sales : 0;
+                }
+              });
+            }
+          } else {
+            cat.ratio = sales > 0 ? cat.sum / sales : 0;
+            if (cat.items) {
+              cat.items.forEach(item => {
+                if (item) {
+                  item.ratio = sales > 0 ? (item.value || 0) / sales : 0;
+                }
+              });
+            }
+          }
+        });
+      });
+    }
+  });
+  
+  return cleaned;
+};
+
 
 // Native IndexedDB wrapper to store the giant sales array as a single object, avoiding 5MB localStorage limits
 const initIndexedDB = () => {
@@ -273,10 +387,13 @@ export default function Home() {
   const [stores, setStores] = useState([]);
   const [salesRecords, setSalesRecords] = useState([]);
   const [uploadLogs, setUploadLogs] = useState([]);
+  const [costData, setCostData] = useState({});
 
   // UI Navigation states
-  const [globalTab, setGlobalTab] = useState("dashboard"); // "dashboard" | "pivot" | "upload"
+  const [globalTab, setGlobalTab] = useState("dashboard"); // "dashboard" | "pivot" | "upload" | "cost"
   const [selectedStoreId, setSelectedStoreId] = useState("total"); // "total" | storeId
+  const [costTab, setCostTab] = useState("trend"); // "trend" | "breakdown" | "setup"
+  const [costSelectedPeriod, setCostSelectedPeriod] = useState("");
   
   // Filters
   const [selectedPeriod, setSelectedPeriod] = useState("all"); // Default to "all" (전체 기간)
@@ -390,8 +507,10 @@ export default function Home() {
 
   // Bulk Upload state
   const [dragActive, setDragActive] = useState(false);
+  const [costDragActive, setCostDragActive] = useState(false);
   const [uploadStatusMsg, setUploadStatusMsg] = useState({ type: "", text: "" });
   const fileInputRef = useRef(null);
+  const costFileInputRef = useRef(null);
   const [pendingUploadPackage, setPendingUploadPackage] = useState(null);
 
   // Authentication states
@@ -428,6 +547,17 @@ export default function Home() {
     } else if (!isFirstRun) {
       setUploadLogs([]);
       localStorage.setItem("okpos_uploads", JSON.stringify([]));
+    }
+
+    const localCostData = localStorage.getItem("okpos_cost_data");
+    if (localCostData) {
+      const cleaned = cleanCostData(JSON.parse(localCostData));
+      setCostData(cleaned);
+      localStorage.setItem("okpos_cost_data", JSON.stringify(cleaned));
+    } else {
+      const cleaned = cleanCostData(DEFAULT_COST_DATA);
+      setCostData(cleaned);
+      localStorage.setItem("okpos_cost_data", JSON.stringify(cleaned));
     }
 
     // Load sales records asynchronously from IndexedDB with fallback/migration
@@ -480,6 +610,12 @@ export default function Home() {
     saveSalesToIndexedDB(newSales).catch(err => {
       console.error("Failed to sync sales records to IndexedDB:", err);
     });
+  };
+
+  const saveCostDataToLocal = (newCostData) => {
+    const cleaned = cleanCostData(newCostData);
+    setCostData(cleaned);
+    localStorage.setItem("okpos_cost_data", JSON.stringify(cleaned));
   };
 
   // Authentication Handlers
@@ -904,6 +1040,74 @@ export default function Home() {
       setUploadStatusMsg({
         type: "error",
         text: `파일 분석 실패. (오류 내용: ${errors.join(", ")})`
+      });
+      setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 7000);
+    }
+  };
+
+  // Cost analysis file upload handlers
+  const handleCostDrag = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.type === "dragenter" || e.type === "dragover") {
+      setCostDragActive(true);
+    } else if (e.type === "dragleave") {
+      setCostDragActive(false);
+    }
+  };
+
+  const handleCostDrop = async (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setCostDragActive(false);
+    
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      const file = e.dataTransfer.files[0];
+      await uploadCostFile(file);
+    }
+  };
+
+  const handleCostFileSelect = async (e) => {
+    if (e.target.files && e.target.files.length > 0) {
+      const file = e.target.files[0];
+      await uploadCostFile(file);
+    }
+  };
+
+  const uploadCostFile = async (file) => {
+    setUploadStatusMsg({ type: "info", text: "원가 엑셀 파일 분석 중..." });
+    try {
+      const parsed = await parseCostExcel(file);
+      
+      // Determine target store
+      let targetStoreId = selectedStoreId;
+      if (selectedStoreId === "total") {
+        // Try to fuzzy match by filename or title
+        const matchedStore = stores.find(s => file.name.includes(s.name) || (parsed.initialCost?.title && parsed.initialCost.title.includes(s.name)));
+        if (matchedStore) {
+          targetStoreId = matchedStore.id;
+        } else {
+          throw new Error("엑셀 파일이 어떤 매장의 파일인지 감지하지 못했습니다. 개별 매장을 선택한 후 다시 업로드해 주세요.");
+        }
+      }
+      
+      const updatedCostData = {
+        ...costData,
+        [targetStoreId]: parsed
+      };
+      saveCostDataToLocal(updatedCostData);
+      
+      const storeName = stores.find(s => s.id === targetStoreId)?.name || "선택 매장";
+      setUploadStatusMsg({
+        type: "success",
+        text: `[${storeName}] 원가/손익 데이터 분석 완료 및 대시보드 반영 완료!`
+      });
+      setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 5000);
+    } catch (err) {
+      console.error(err);
+      setUploadStatusMsg({
+        type: "error",
+        text: `원가 엑셀 파일 분석 실패: ${err.message}`
       });
       setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 7000);
     }
@@ -1735,7 +1939,8 @@ export function generateMockSalesData() {
   };
 
   const formatRawWon = (value) => {
-    return `${value.toLocaleString()}원`;
+    if (value === undefined || value === null) return "0원";
+    return `${Math.round(value).toLocaleString()}원`;
   };
 
   if (!mounted) {
@@ -1895,6 +2100,17 @@ export function generateMockSalesData() {
           >
             <Upload className="w-3.5 h-3.5 md:w-4 md:h-4 flex-shrink-0" />
             업로드 허브
+          </button>
+          <button
+            onClick={() => setGlobalTab("cost")}
+            className={`flex items-center gap-1.5 md:gap-2 px-3 py-1.5 md:px-4 md:py-2 rounded-lg text-xs md:text-sm font-semibold transition-all whitespace-nowrap ${
+              globalTab === "cost"
+                ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/20"
+                : "text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <DollarSign className="w-3.5 h-3.5 md:w-4 md:h-4 flex-shrink-0" />
+            원가/손익 분석
           </button>
         </div>
 
@@ -3604,6 +3820,791 @@ export function generateMockSalesData() {
                 </div>
               </div>
             </div>
+          </div>
+        )}
+
+        {globalTab === "cost" && (
+          <div className="space-y-6">
+            {/* Page Header */}
+            <div className="glass-card p-6 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h3 className="text-xl font-bold text-white flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-indigo-400" />
+                  원가 / 손익 분석 대시보드
+                </h3>
+                <div className="flex items-center gap-3 mt-2">
+                  <span className="text-xs font-bold text-slate-400">분석 매장:</span>
+                  <select
+                    value={selectedStoreId}
+                    onChange={(e) => {
+                      setSelectedStoreId(e.target.value);
+                      setCostSelectedPeriod("");
+                    }}
+                    className="bg-[#121622] border border-white/10 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-bold"
+                  >
+                    <option value="total">전체 매장 (선택 필요)</option>
+                    {stores.map(s => (
+                      <option key={s.id} value={s.id}>{s.name}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              {selectedStoreId !== "total" && (
+                <div className="flex items-center gap-3">
+                  <button 
+                    onClick={() => costFileInputRef.current?.click()}
+                    className="px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition-all shadow-md shadow-indigo-600/20 flex items-center gap-1.5"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    손익계산서 엑셀 업로드
+                  </button>
+                  <input 
+                    type="file" 
+                    ref={costFileInputRef} 
+                    accept=".xls,.xlsx" 
+                    className="hidden" 
+                    onChange={handleCostFileSelect}
+                  />
+                </div>
+              )}
+            </div>
+
+            {selectedStoreId === "total" ? (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                <div className="md:col-span-2 lg:col-span-3 glass-card p-8 rounded-2xl text-center space-y-4">
+                  <div className="bg-indigo-600/10 p-4 rounded-full text-indigo-400 w-16 h-16 flex items-center justify-center mx-auto shadow-[0_0_15px_rgba(99,102,241,0.15)]">
+                    <DollarSign className="w-8 h-8" />
+                  </div>
+                  <h4 className="text-base font-bold text-white">개별 매장을 선택해 주세요</h4>
+                  <p className="text-xs text-slate-400 max-w-md mx-auto">
+                    원가 및 월별 손익 분석은 지점별 상세 엑셀 명세 데이터를 기반으로 제공되므로, 왼쪽의 매장 선택 영역에서 개별 지점을 선택하셔야 상세 분석이 표출됩니다.
+                  </p>
+                  
+                  <div className="pt-4 flex flex-wrap justify-center gap-3">
+                    {stores.map(store => {
+                      const hasCost = !!costData[store.id];
+                      return (
+                        <button
+                          key={store.id}
+                          onClick={() => setSelectedStoreId(store.id)}
+                          className={`px-4 py-2.5 rounded-xl text-xs font-bold transition-all flex items-center gap-1.5 border ${
+                            hasCost
+                              ? "bg-indigo-600/10 text-indigo-300 border-indigo-500/25 hover:bg-indigo-600/20"
+                              : "bg-white/2 text-slate-400 border-white/5 hover:bg-white/5"
+                          }`}
+                        >
+                          <span>{store.name}</span>
+                          {hasCost ? (
+                            <span className="text-[9px] bg-indigo-500 text-white px-1.5 py-0.5 rounded font-black">분석 가능</span>
+                          ) : (
+                            <span className="text-[9px] bg-slate-700 text-slate-400 px-1.5 py-0.5 rounded">데이터 없음</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ) : !costData[selectedStoreId] ? (
+              <div className="grid grid-cols-1 gap-6">
+                <div 
+                  onDragEnter={handleCostDrag}
+                  onDragOver={handleCostDrag}
+                  onDragLeave={handleCostDrag}
+                  onDrop={handleCostDrop}
+                  className={`border-2 border-dashed rounded-2xl p-12 flex flex-col items-center justify-center text-center transition-all min-h-[350px] ${
+                    costDragActive 
+                      ? "border-indigo-500 bg-indigo-500/5 shadow-[0_0_20px_rgba(99,102,241,0.25)]" 
+                      : "border-white/10 bg-[#121622]/40 hover:border-white/20"
+                  }`}
+                >
+                  <div className="bg-indigo-600/10 p-4 rounded-full text-indigo-400 mb-4 shadow-[0_0_15px_rgba(99,102,241,0.15)]">
+                    <Upload className="w-10 h-10" />
+                  </div>
+                  <h4 className="text-sm font-bold text-white">[{currentStore?.name}] 매장의 원가/손익계산서 엑셀 업로드</h4>
+                  <p className="text-xs text-slate-400 max-w-md mt-2">
+                    지점의 월별 상세 지출 항목과 매출 분석표가 담긴 엑셀 통합 파일(`.xlsx`)을 드래그하여 놓거나 컴퓨터에서 선택하세요.
+                  </p>
+                  <p className="text-[10px] text-amber-500 font-semibold mt-2">
+                    ※ 시트 구성: 월별 세부 지출 항목(YYMM 형식의 여러 시트) 및 간편손익분석표 시트 포함 필수
+                  </p>
+
+                  <div className="mt-6 flex items-center gap-3">
+                    <button 
+                      onClick={() => costFileInputRef.current?.click()}
+                      className="px-4 py-2 bg-indigo-600 text-white rounded-xl text-xs font-bold hover:bg-indigo-500 transition-all shadow-md shadow-indigo-600/20"
+                    >
+                      컴퓨터에서 파일 선택
+                    </button>
+                    {selectedStoreId === "store-4" && (
+                      <button
+                        onClick={() => {
+                          const updated = { ...costData, "store-4": DEFAULT_COST_DATA["store-4"] };
+                          saveCostDataToLocal(updated);
+                          setUploadStatusMsg({ type: "success", text: "신영웅청국장 데모 원가 데이터를 로드했습니다." });
+                          setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 5000);
+                        }}
+                        className="px-4 py-2 bg-emerald-600 text-white rounded-xl text-xs font-bold hover:bg-emerald-500 transition-all shadow-md shadow-emerald-600/20"
+                      >
+                        신영웅 데모 데이터 복구
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-6">
+                <div className="flex border-b border-white/5 gap-6">
+                  {[
+                    { id: "trend", label: "월별 손익 추이" },
+                    { id: "breakdown", label: "상세 지출 분석" },
+                    { id: "setup", label: "초기 창업 비용" }
+                  ].map(tab => (
+                    <button
+                      key={tab.id}
+                      onClick={() => setCostTab(tab.id)}
+                      className={`pb-3 text-xs md:text-sm font-bold relative transition-all ${
+                        costTab === tab.id ? "text-white" : "text-slate-400 hover:text-slate-200"
+                      }`}
+                    >
+                      {tab.label}
+                      {costTab === tab.id && (
+                        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-indigo-500 rounded-full" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+
+                {costTab === "trend" && (() => {
+                  const currentCost = costData[selectedStoreId];
+                  const periods = Object.keys(currentCost.months || {}).sort();
+                  
+                  if (periods.length === 0) {
+                    return (
+                      <div className="glass-card p-8 text-center text-slate-500 text-xs rounded-2xl">
+                        분석할 수 있는 월별 손익 시트 데이터가 없습니다.
+                      </div>
+                    );
+                  }
+
+                  const chartData = periods.map(period => {
+                    const mData = currentCost.months[period];
+                    const expenses = mData.sales - mData.netProfit;
+                    return {
+                      period: period.substring(2),
+                      sales: mData.sales / 10000,
+                      expenses: expenses / 10000,
+                      profit: mData.netProfit / 10000,
+                      foodRatio: Math.round((mData.categories["식재료"]?.ratio || 0) * 1000) / 10,
+                      laborRatio: Math.round((mData.categories["인건비"]?.ratio || 0) * 1000) / 10,
+                      rentRatio: Math.round((mData.categories["임차료/판매관리"]?.ratio || 0) * 1000) / 10,
+                      taxRatio: Math.round((mData.categories["세금.보험.수수료"]?.ratio || 0) * 1000) / 10,
+                      marketingRatio: Math.round((mData.categories["홍보/광고/선전비"]?.ratio || 0) * 1000) / 10
+                    };
+                  });
+
+                  const totalSales = periods.reduce((sum, p) => sum + currentCost.months[p].sales, 0);
+                  const totalProfit = periods.reduce((sum, p) => sum + currentCost.months[p].netProfit, 0);
+                  const avgSales = totalSales / periods.length;
+                  const avgProfit = totalProfit / periods.length;
+                  
+                  return (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="glass-card p-5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">누적 총 매출액</span>
+                          <span className="text-xl font-extrabold text-white mt-1 block">{formatRawWon(totalSales)}</span>
+                          <span className="text-[10px] text-indigo-400 font-medium block mt-1.5">월평균 {formatRawWon(Math.round(avgSales))}</span>
+                        </div>
+                        <div className="glass-card p-5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">누적 총 순이익</span>
+                          <span className={`text-xl font-extrabold mt-1 block ${totalProfit >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {formatRawWon(totalProfit)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium block mt-1.5">월평균 {formatRawWon(Math.round(avgProfit))}</span>
+                        </div>
+                        <div className="glass-card p-5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">평균 영업이익률</span>
+                          <span className="text-xl font-extrabold text-white mt-1 block">{(totalProfit / totalSales * 100).toFixed(2)}%</span>
+                          <span className="text-[10px] text-slate-400 font-medium block mt-1.5">총 {periods.length}개월 분석 기준</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                        <div className="glass-card p-6 rounded-2xl">
+                          <h4 className="text-xs font-bold text-white mb-4">월별 매출 / 지출 / 순손익 추이 <span className="text-[9px] text-slate-500">(단위: 만원)</span></h4>
+                          <div className="h-72">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <BarChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                                <XAxis dataKey="period" stroke="#94a3b8" fontSize={10} tickLine={false} />
+                                <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} />
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: "#161b26", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
+                                  labelStyle={{ color: "#fff", fontWeight: "bold" }}
+                                  formatter={(value, name) => {
+                                    const label = name === "sales" ? "매출" : name === "expenses" ? "총지출" : "순손익";
+                                    return [`${Math.round(value).toLocaleString()} 만원`, label];
+                                  }}
+                                />
+                                <Legend verticalAlign="top" height={36} iconSize={10} wrapperStyle={{ fontSize: '11px', color: '#94a3b8' }} />
+                                <Bar dataKey="sales" fill="#6366f1" name="sales" radius={[3, 3, 0, 0]} />
+                                <Bar dataKey="expenses" fill="#f59e0b" name="expenses" radius={[3, 3, 0, 0]} />
+                                <Bar dataKey="profit" fill="#10b981" name="profit" radius={[3, 3, 0, 0]} />
+                              </BarChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+
+                        <div className="glass-card p-6 rounded-2xl">
+                          <h4 className="text-xs font-bold text-white mb-4">주요 원가 항목 매출 대비 비율 추이 <span className="text-[9px] text-slate-500">(단위: %)</span></h4>
+                          <div className="h-72">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <LineChart data={chartData} margin={{ top: 10, right: 10, left: -20, bottom: 5 }}>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.04)" />
+                                <XAxis dataKey="period" stroke="#94a3b8" fontSize={10} tickLine={false} />
+                                <YAxis stroke="#94a3b8" fontSize={10} tickLine={false} domain={[0, 'auto']} />
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: "#161b26", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
+                                  labelStyle={{ color: "#fff", fontWeight: "bold" }}
+                                  formatter={(value, name) => {
+                                    const label = name === "foodRatio" ? "식재료비" : name === "laborRatio" ? "인건비" : name === "rentRatio" ? "임대/판관비" : name === "taxRatio" ? "세무/수수료" : "홍보비";
+                                    return [`${value}%`, label];
+                                  }}
+                                />
+                                <Legend verticalAlign="top" height={36} iconSize={10} wrapperStyle={{ fontSize: '11px' }} />
+                                <Line type="monotone" dataKey="foodRatio" stroke="#6366f1" name="foodRatio" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="laborRatio" stroke="#ec4899" name="laborRatio" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="rentRatio" stroke="#f59e0b" name="rentRatio" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="taxRatio" stroke="#10b981" name="taxRatio" strokeWidth={2} dot={{ r: 3 }} />
+                                <Line type="monotone" dataKey="marketingRatio" stroke="#06b6d4" name="marketingRatio" strokeWidth={2} dot={{ r: 3 }} />
+                              </LineChart>
+                            </ResponsiveContainer>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="glass-card p-6 rounded-2xl">
+                        <h4 className="text-xs font-bold text-white mb-4">월별 간편 손익분석 명세표</h4>
+                        <div className="overflow-x-auto">
+                          <table className="w-full text-left text-xs text-slate-400">
+                            <thead className="bg-white/2 border-b border-white/5 font-bold text-slate-300">
+                              <tr>
+                                <th className="py-3 px-4">영업월별</th>
+                                <th className="py-3 px-4 text-right">매출액</th>
+                                <th className="py-3 px-4 text-right">식재료 (비율)</th>
+                                <th className="py-3 px-4 text-right">인건비 (비율)</th>
+                                <th className="py-3 px-4 text-right">임차/판관비 (비율)</th>
+                                <th className="py-3 px-4 text-right">세금/수수료 (비율)</th>
+                                <th className="py-3 px-4 text-right">홍보/광고 (비율)</th>
+                                <th className="py-3 px-4 text-right">최종손익</th>
+                                <th className="py-3 px-4 text-right">이익률</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {[...periods].reverse().map(period => {
+                                const mData = currentCost.months[period];
+                                const food = mData.categories["식재료"] || { sum: 0, ratio: 0 };
+                                const labor = mData.categories["인건비"] || { sum: 0, ratio: 0 };
+                                const rent = mData.categories["임차료/판매관리"] || { sum: 0, ratio: 0 };
+                                const tax = mData.categories["세금.보험.수수료"] || { sum: 0, ratio: 0 };
+                                const mkt = mData.categories["홍보/광고/선전비"] || { sum: 0, ratio: 0 };
+                                const profit = mData.netProfit;
+                                const profitRatio = (profit / mData.sales) * 100;
+                                
+                                return (
+                                  <tr key={period} className="border-b border-white/5 hover:bg-white/2 transition-colors">
+                                    <td className="py-2.5 px-4 font-bold text-white">{period}</td>
+                                    <td className="py-2.5 px-4 text-right font-semibold text-slate-200">{formatRawWon(mData.sales)}</td>
+                                    <td className="py-2.5 px-4 text-right">
+                                      <span className="text-slate-300">{formatRawWon(food.sum)}</span>
+                                      <span className="text-[10px] text-slate-500 block">({(food.ratio * 100).toFixed(1)}%)</span>
+                                    </td>
+                                    <td className="py-2.5 px-4 text-right">
+                                      <span className="text-slate-300">{formatRawWon(labor.sum)}</span>
+                                      <span className="text-[10px] text-slate-500 block">({(labor.ratio * 100).toFixed(1)}%)</span>
+                                    </td>
+                                    <td className="py-2.5 px-4 text-right">
+                                      <span className="text-slate-300">{formatRawWon(rent.sum)}</span>
+                                      <span className="text-[10px] text-slate-500 block">({(rent.ratio * 100).toFixed(1)}%)</span>
+                                    </td>
+                                    <td className="py-2.5 px-4 text-right">
+                                      <span className="text-slate-300">{formatRawWon(tax.sum)}</span>
+                                      <span className="text-[10px] text-slate-500 block">({(tax.ratio * 100).toFixed(1)}%)</span>
+                                    </td>
+                                    <td className="py-2.5 px-4 text-right">
+                                      <span className="text-slate-300">{formatRawWon(mkt.sum)}</span>
+                                      <span className="text-[10px] text-slate-500 block">({(mkt.ratio * 100).toFixed(1)}%)</span>
+                                    </td>
+                                    <td className={`py-2.5 px-4 text-right font-bold ${profit >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                      {formatRawWon(profit)}
+                                    </td>
+                                    <td className={`py-2.5 px-4 text-right font-bold ${profitRatio >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                                      {profitRatio.toFixed(1)}%
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+
+                      {/* Food Ingredients Vendor Trend Table */}
+                      <div className="glass-card p-6 rounded-2xl">
+                        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-4">
+                          <div>
+                            <h4 className="text-xs font-bold text-white">식재료 업체별 월별 지출 명세</h4>
+                            <p className="text-[10px] text-slate-500 mt-0.5">
+                              각 식재료 공급업체별 월간 거래 금액 추이와 누적 총액 (지출액 기준 내림차순 정렬)
+                            </p>
+                          </div>
+                        </div>
+
+                        {(() => {
+                          const currentCost = costData[selectedStoreId];
+                          const periods = Object.keys(currentCost.months || {}).sort();
+                          
+                          // Extract unique vendors for the category "식재료"
+                          const vendorTotals = {};
+                          const vendorMonthly = {};
+                          
+                          periods.forEach(p => {
+                            const cat = currentCost.months[p].categories["식재료"];
+                            if (cat && cat.items) {
+                              cat.items.forEach(item => {
+                                const name = item.name;
+                                const val = item.value || 0;
+                                if (name) {
+                                  vendorTotals[name] = (vendorTotals[name] || 0) + val;
+                                  if (!vendorMonthly[name]) {
+                                    vendorMonthly[name] = {};
+                                  }
+                                  vendorMonthly[name][p] = val;
+                                }
+                              });
+                            }
+                          });
+                          
+                          // Sort vendors by total spending descending
+                          const sortedVendors = Object.keys(vendorTotals).sort((a, b) => vendorTotals[b] - vendorTotals[a]);
+                          
+                          if (sortedVendors.length === 0) {
+                            return (
+                              <div className="text-center text-xs text-slate-500 py-4">
+                                식재료 업체 데이터가 없습니다.
+                              </div>
+                            );
+                          }
+                          
+                          return (
+                            <div className="overflow-x-auto">
+                              <table className="w-full text-left text-xs text-slate-400">
+                                <thead className="bg-white/2 border-b border-white/5 font-bold text-slate-300">
+                                  <tr>
+                                    <th className="py-3 px-4">식재료 업체명</th>
+                                    <th className="py-3 px-4 text-right">누적 총 합계</th>
+                                    {[...periods].reverse().map(p => (
+                                      <th key={p} className="py-3 px-4 text-right whitespace-nowrap">{p}</th>
+                                    ))}
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {sortedVendors.map(vendor => (
+                                    <tr key={vendor} className="border-b border-white/5 hover:bg-white/2 transition-colors">
+                                      <td className="py-2.5 px-4 font-bold text-white">{vendor}</td>
+                                      <td className="py-2.5 px-4 text-right font-semibold text-indigo-300">
+                                        {formatRawWon(vendorTotals[vendor])}
+                                      </td>
+                                      {[...periods].reverse().map(p => {
+                                        const val = vendorMonthly[vendor][p];
+                                        return (
+                                          <td key={p} className="py-2.5 px-4 text-right font-medium">
+                                            {val !== undefined ? (
+                                              <span className="text-slate-200">{formatRawWon(val)}</span>
+                                            ) : (
+                                              <span className="text-slate-600">-</span>
+                                            )}
+                                          </td>
+                                        );
+                                      })}
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {costTab === "breakdown" && (() => {
+                  const currentCost = costData[selectedStoreId];
+                  const periods = Object.keys(currentCost.months || {}).sort();
+                  
+                  if (periods.length === 0) {
+                    return (
+                      <div className="glass-card p-8 text-center text-slate-500 text-xs rounded-2xl">
+                        분석할 수 있는 월별 지출 데이터가 없습니다.
+                      </div>
+                    );
+                  }
+
+                  const activeMonthPeriod = costSelectedPeriod && currentCost.months[costSelectedPeriod] 
+                    ? costSelectedPeriod 
+                    : (periods[periods.length - 1] || "");
+                    
+                  const activeMonth = currentCost.months[activeMonthPeriod];
+                  if (!activeMonth) return null;
+
+                  const expenses = activeMonth.sales - activeMonth.netProfit;
+                  const profitRatio = (activeMonth.netProfit / activeMonth.sales) * 100;
+                  
+                  const pieData = Object.keys(activeMonth.categories)
+                    .filter(c => c !== "손익" && activeMonth.categories[c].sum > 0)
+                    .map(c => ({
+                      name: c,
+                      value: activeMonth.categories[c].sum
+                    }));
+                    
+                  const PIE_COLORS = ["#6366f1", "#ec4899", "#f59e0b", "#10b981", "#06b6d4", "#8b5cf6"];
+
+                  return (
+                    <div className="space-y-6">
+                      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs font-bold text-slate-400">조회 월 선택:</span>
+                          <select
+                            value={activeMonthPeriod}
+                            onChange={(e) => setCostSelectedPeriod(e.target.value)}
+                            className="bg-[#121622] border border-white/5 rounded-xl px-3 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500 font-bold"
+                          >
+                            {[...periods].reverse().map(p => (
+                              <option key={p} value={p}>{p.substring(0,4)}년 {p.substring(5,7)}월</option>
+                            ))}
+                          </select>
+                        </div>
+                        {activeMonth.memo && (
+                          <div className="text-[11px] text-amber-500 bg-amber-500/5 border border-amber-500/10 px-3 py-2 rounded-xl max-w-xl font-medium">
+                            📌 **특이사항 메모**: {activeMonth.memo}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="grid grid-cols-2 lg:grid-cols-4 gap-6">
+                        <div className="glass-card p-4.5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">당월 매출 총합</span>
+                          <span className="text-lg font-extrabold text-white mt-1 block">{formatRawWon(activeMonth.sales)}</span>
+                          <span className="text-[10px] text-indigo-400 font-medium block mt-1">지출 비율 {((expenses/activeMonth.sales)*100).toFixed(1)}%</span>
+                        </div>
+                        <div className="glass-card p-4.5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">당월 총 비용 지출</span>
+                          <span className="text-lg font-extrabold text-amber-400 mt-1 block">{formatRawWon(expenses)}</span>
+                          <span className="text-[10px] text-slate-400 font-medium block mt-1">순수 경비 합계</span>
+                        </div>
+                        <div className="glass-card p-4.5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">당월 영업 순손익</span>
+                          <span className={`text-lg font-extrabold mt-1 block ${activeMonth.netProfit >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {formatRawWon(activeMonth.netProfit)}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium block mt-1">매출 대비 순이익률</span>
+                        </div>
+                        <div className="glass-card p-4.5 rounded-2xl">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">최종 마진율</span>
+                          <span className={`text-lg font-extrabold mt-1 block ${profitRatio >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {profitRatio.toFixed(2)}%
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium block mt-1">투자금 회수 공헌율</span>
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="glass-card p-6 rounded-2xl lg:col-span-1 flex flex-col justify-between">
+                          <div>
+                            <h4 className="text-xs font-bold text-white mb-2">지출 유형별 점유 비율</h4>
+                            <span className="text-[10px] text-slate-500">당월 총 비용 ({formatRawWon(expenses)}) 대비 비율</span>
+                          </div>
+                          <div className="h-56 flex items-center justify-center relative">
+                            {pieData.length > 0 ? (
+                              <ResponsiveContainer width="100%" height="100%">
+                                <PieChart>
+                                  <Pie
+                                    data={pieData}
+                                    cx="50%"
+                                    cy="50%"
+                                    innerRadius={55}
+                                    outerRadius={80}
+                                    paddingAngle={3}
+                                    dataKey="value"
+                                  >
+                                    {pieData.map((entry, index) => (
+                                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
+                                    ))}
+                                  </Pie>
+                                  <Tooltip 
+                                    contentStyle={{ backgroundColor: "#161b26", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
+                                    formatter={(value) => [`${formatRawWon(value)} (${(value/expenses*100).toFixed(1)}%)`, "금액"]}
+                                  />
+                                </PieChart>
+                              </ResponsiveContainer>
+                            ) : (
+                              <div className="text-xs text-slate-600">데이터 없음</div>
+                            )}
+                            <div className="absolute flex flex-col items-center justify-center">
+                              <span className="text-[10px] text-slate-500 font-bold">총비용</span>
+                              <span className="text-sm font-black text-white mt-0.5">{Math.round(expenses/10000).toLocaleString()}만원</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="glass-card p-6 rounded-2xl lg:col-span-2">
+                          <h4 className="text-xs font-bold text-white mb-4">비용 항목별 집계 리스트</h4>
+                          <div className="space-y-4">
+                            {Object.keys(activeMonth.categories).filter(c => c !== "손익").map((catName, idx) => {
+                              const catVal = activeMonth.categories[catName];
+                              const pctOfSales = catVal.ratio * 100;
+                              const pctOfExpenses = expenses > 0 ? (catVal.sum / expenses) * 100 : 0;
+                              
+                              return (
+                                <div key={catName} className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-xs font-semibold">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }} />
+                                      <span className="text-slate-300 font-bold">{catName}</span>
+                                    </div>
+                                    <div className="text-slate-400">
+                                      <span className="font-bold text-white">{formatRawWon(catVal.sum)}</span> 
+                                      <span className="text-[10px] text-slate-500 ml-2">매출대비: {pctOfSales.toFixed(1)}% | 비용대비: {pctOfExpenses.toFixed(1)}%</span>
+                                    </div>
+                                  </div>
+                                  <div className="w-full bg-white/5 h-2 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full rounded-full transition-all duration-500" 
+                                      style={{ 
+                                        width: `${pctOfExpenses}%`,
+                                        backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] 
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <div className="flex items-center justify-between">
+                          <h4 className="text-xs font-bold text-white">비용 카테고리별 세부 거래 내역 명세</h4>
+                          <span className="text-[10px] text-slate-500">* 각 지출 내역은 엑셀 파일 내 side-by-side 리스트에서 추출되었습니다.</span>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                          {Object.keys(activeMonth.categories).map((catName, idx) => {
+                            const catObj = activeMonth.categories[catName];
+                            const sortedItems = [...(catObj.items || [])].sort((a,b) => b.value - a.value);
+                            
+                            return (
+                              <div key={catName} className="glass-card rounded-2xl overflow-hidden flex flex-col h-[280px]">
+                                <div className="px-4.5 py-3.5 bg-white/2 border-b border-white/5 flex items-center justify-between">
+                                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: PIE_COLORS[idx % PIE_COLORS.length] }} />
+                                    {catName}
+                                  </span>
+                                  <span className="text-[11px] font-black text-indigo-400">{formatRawWon(catObj.sum)}</span>
+                                </div>
+                                <div className="p-3 overflow-y-auto flex-1 custom-scrollbar">
+                                  {sortedItems.length > 0 ? (
+                                    <table className="w-full text-[11px] text-slate-400">
+                                      <tbody>
+                                        {sortedItems.map((item, itemIdx) => (
+                                          <tr key={itemIdx} className="border-b border-white/2 hover:bg-white/2">
+                                            <td className="py-2 text-slate-300 font-medium truncate max-w-[120px]" title={item.name}>{item.name}</td>
+                                            <td className="py-2 text-right text-white font-bold">{formatRawWon(item.value)}</td>
+                                            <td className="py-2 text-right text-slate-500 text-[10px]">({(item.value / activeMonth.sales * 100).toFixed(2)}%)</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  ) : (
+                                    <div className="h-full flex items-center justify-center text-[10px] text-slate-600 font-medium">
+                                      세부 거래 내역이 없습니다.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+
+                {costTab === "setup" && (() => {
+                  const currentCost = costData[selectedStoreId];
+                  const initCost = currentCost.initialCost;
+
+                  if (!initCost) {
+                    return (
+                      <div className="glass-card p-12 text-center text-slate-500 text-xs rounded-2xl space-y-2">
+                        <AlertCircle className="w-8 h-8 text-slate-600 mx-auto" />
+                        <h4 className="text-sm font-bold text-white">초기 개설 비용 데이터가 존재하지 않습니다</h4>
+                        <p className="text-[11px] text-slate-500 max-w-sm mx-auto">
+                          초기 창업 비용은 시트 이름이 `2510` 이거나 제목에 `초기비용`이 들어 있는 시트를 파싱해 제공됩니다.
+                        </p>
+                      </div>
+                    );
+                  }
+
+                  const total = initCost.totalSum;
+                  const categoriesList = Object.keys(initCost.categories);
+                  
+                  const pieData = categoriesList.map(c => ({
+                    name: c,
+                    value: initCost.categories[c].sum
+                  }));
+                  
+                  const COLORS_SETUP = ["#6366f1", "#06b6d4", "#f59e0b", "#ec4899", "#8b5cf6"];
+
+                  return (
+                    <div className="space-y-6">
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="glass-card p-5 rounded-2xl border border-indigo-500/10 shadow-[0_0_15px_rgba(99,102,241,0.05)]">
+                          <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">총 창업 비용 합계</span>
+                          <span className="text-2xl font-black text-white mt-1 block">{formatRawWon(total)}</span>
+                          <span className="text-[10px] text-indigo-400 font-medium block mt-1.5">점포 개설 실투자금 총합</span>
+                        </div>
+                        {categoriesList.slice(0, 2).map((c, i) => {
+                          const val = initCost.categories[c];
+                          return (
+                            <div key={c} className="glass-card p-5 rounded-2xl">
+                              <span className="text-[10px] text-slate-500 font-bold block uppercase tracking-wider">{c} 비용 합계</span>
+                              <span className="text-xl font-extrabold text-white mt-1 block">{formatRawWon(val.sum)}</span>
+                              <span className="text-[10px] text-slate-400 font-medium block mt-1.5">비중 {((val.sum/total)*100).toFixed(1)}%</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+
+                      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+                        <div className="glass-card p-6 rounded-2xl flex flex-col justify-between">
+                          <div>
+                            <h4 className="text-xs font-bold text-white mb-2">창업 투자 항목별 비중</h4>
+                            <span className="text-[10px] text-slate-500">총 투자액 {formatRawWon(total)} 대비 비율</span>
+                          </div>
+                          <div className="h-56 flex items-center justify-center relative">
+                            <ResponsiveContainer width="100%" height="100%">
+                              <PieChart>
+                                <Pie
+                                  data={pieData}
+                                  cx="50%"
+                                  cy="50%"
+                                  innerRadius={55}
+                                  outerRadius={80}
+                                  paddingAngle={3}
+                                  dataKey="value"
+                                >
+                                  {pieData.map((entry, index) => (
+                                    <Cell key={`cell-${index}`} fill={COLORS_SETUP[index % COLORS_SETUP.length]} />
+                                  ))}
+                                </Pie>
+                                <Tooltip 
+                                  contentStyle={{ backgroundColor: "#161b26", borderColor: "rgba(255,255,255,0.1)", borderRadius: "8px" }}
+                                  formatter={(value) => [`${formatRawWon(value)} (${(value/total*100).toFixed(1)}%)`, "투자금"]}
+                                />
+                              </PieChart>
+                            </ResponsiveContainer>
+                            <div className="absolute flex flex-col items-center justify-center">
+                              <span className="text-[10px] text-slate-500 font-bold">실투자금</span>
+                              <span className="text-sm font-black text-white mt-0.5">{Math.round(total/1000000).toLocaleString()}백만원</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="glass-card p-6 rounded-2xl lg:col-span-2">
+                          <h4 className="text-xs font-bold text-white mb-4">투자 항목 리스트 및 지분</h4>
+                          <div className="space-y-4">
+                            {categoriesList.map((c, idx) => {
+                              const catVal = initCost.categories[c];
+                              const pct = (catVal.sum / total) * 100;
+                              
+                              return (
+                                <div key={c} className="space-y-1.5">
+                                  <div className="flex items-center justify-between text-xs font-semibold">
+                                    <div className="flex items-center gap-2">
+                                      <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: COLORS_SETUP[idx % COLORS_SETUP.length] }} />
+                                      <span className="text-slate-300 font-bold">{c}</span>
+                                    </div>
+                                    <div className="text-slate-400">
+                                      <span className="font-bold text-white">{formatRawWon(catVal.sum)}</span> 
+                                      <span className="text-[10px] text-slate-500 ml-2">투자 지분: {pct.toFixed(1)}%</span>
+                                    </div>
+                                  </div>
+                                  <div className="w-full bg-white/5 h-2 rounded-full overflow-hidden">
+                                    <div 
+                                      className="h-full rounded-full transition-all duration-500" 
+                                      style={{ 
+                                        width: `${pct}%`,
+                                        backgroundColor: COLORS_SETUP[idx % COLORS_SETUP.length] 
+                                      }}
+                                    />
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-4">
+                        <h4 className="text-xs font-bold text-white">초기 창업 비용 상세 내역 명세</h4>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                          {categoriesList.map((c, idx) => {
+                            const catObj = initCost.categories[c];
+                            const sortedItems = [...(catObj.items || [])].sort((a,b) => b.value - a.value);
+                            
+                            return (
+                              <div key={c} className="glass-card rounded-2xl overflow-hidden flex flex-col h-[280px]">
+                                <div className="px-4.5 py-3.5 bg-white/2 border-b border-white/5 flex items-center justify-between">
+                                  <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                    <div className="w-2 h-2 rounded-full" style={{ backgroundColor: COLORS_SETUP[idx % COLORS_SETUP.length] }} />
+                                    {c}
+                                  </span>
+                                  <span className="text-[11px] font-black text-indigo-400">{formatRawWon(catObj.sum)}</span>
+                                </div>
+                                <div className="p-3 overflow-y-auto flex-1 custom-scrollbar">
+                                  {sortedItems.length > 0 ? (
+                                    <table className="w-full text-[11px] text-slate-400">
+                                      <tbody>
+                                        {sortedItems.map((item, itemIdx) => (
+                                          <tr key={itemIdx} className="border-b border-white/2 hover:bg-white/2">
+                                            <td className="py-2 text-slate-300 font-medium truncate max-w-[120px]" title={item.name}>{item.name}</td>
+                                            <td className="py-2 text-right text-white font-bold">{formatRawWon(item.value)}</td>
+                                            <td className="py-2 text-right text-slate-500 text-[10px]">({(item.value / total * 100).toFixed(1)}%)</td>
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  ) : (
+                                    <div className="h-full flex items-center justify-center text-[10px] text-slate-600 font-medium">
+                                      상세 내역이 없습니다.
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </div>
         )}
       </main>
