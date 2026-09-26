@@ -6,10 +6,9 @@ import * as XLSX from "xlsx";
  * E.g., "금막창 종로점 26년 7월 일자별 매출.xlsx" -> { storeName: "금막창 종로점", period: "2026-07" }
  */
 export function parseFileNameInfo(fileName, existingStores = []) {
-  // Remove file extension
   const nameWithoutExt = fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
 
-  // 1. Detect Year and Month from filename (cues)
+  // 1. Detect Year and Month from filename
   let year = null;
   let month = null;
   
@@ -25,7 +24,6 @@ export function parseFileNameInfo(fileName, existingStores = []) {
     const match = nameWithoutExt.match(regex);
     if (match) {
       const mVal = parseInt(match[2], 10);
-      // Ensure month is within valid range to avoid false positives (e.g. matching store numbers)
       if (mVal >= 1 && mVal <= 12) {
         dateMatch = match;
         break;
@@ -37,17 +35,13 @@ export function parseFileNameInfo(fileName, existingStores = []) {
     let rawYear = dateMatch[1];
     let rawMonth = dateMatch[2];
     
-    // Normalize year
     if (rawYear.length === 2) {
-      year = "20" + rawYear; // assume 20xx
+      year = "20" + rawYear;
     } else {
       year = rawYear;
     }
-    
-    // Normalize month
     month = rawMonth.padStart(2, "0");
   } else {
-    // Default to current year and month if not found
     const now = new Date();
     year = now.getFullYear().toString();
     month = (now.getMonth() + 1).toString().padStart(2, "0");
@@ -57,13 +51,10 @@ export function parseFileNameInfo(fileName, existingStores = []) {
 
   // 2. Detect Store Name
   let detectedStoreName = "";
-
-  // Sort existing store names by length descending to match longer names first
   const sortedStoreNames = [...existingStores]
     .map(s => s.name)
     .sort((a, b) => b.length - a.length);
 
-  // A. Match exact substring first
   for (const storeName of sortedStoreNames) {
     if (nameWithoutExt.includes(storeName)) {
       detectedStoreName = storeName;
@@ -71,15 +62,14 @@ export function parseFileNameInfo(fileName, existingStores = []) {
     }
   }
 
-  // B. Fuzzy Match (If no exact match, guess store name and search candidate matches)
   if (!detectedStoreName) {
     let guessed = nameWithoutExt;
     if (dateMatch) {
       guessed = guessed.replace(dateMatch[0], "");
     }
     
-    // Remove common descriptive keywords
     const keywords = [
+      "일기간", "시간대별", "시간대", "ABC분석", "상품ABC분석", "ABC", 
       "일자별", "매출", "상품별", "상세", "현황", "데이터", "엑셀", 
       "정산", "OKPOS", "okpos", "소계", "월별", "다운로드", "copy", "복사본", 
       "\\(\\d+\\)", "결제", "일별", "보고서"
@@ -89,17 +79,12 @@ export function parseFileNameInfo(fileName, existingStores = []) {
       guessed = guessed.replace(new RegExp(keyword, "gi"), "");
     });
 
-    // Remove range months and numbers e.g. "4월~8월 25", "4~8월"
     guessed = guessed.replace(/\d+\s*월\s*[-~]\s*\d+\s*월/g, "");
     guessed = guessed.replace(/\d+\s*[-~]\s*\d+\s*월/g, "");
     guessed = guessed.replace(/\d+\s*[-~]\s*\d+/g, "");
-    
-    // Clean spaces and special characters
     guessed = guessed.replace(/[-_()]/g, " ").replace(/\s+/g, " ").trim();
     
     if (guessed.length >= 2) {
-      // Find candidate stores whose names contain 'guessed' or are contained within 'guessed'
-      // E.g. guessed = "신영웅", candidate = "신영웅청국장해물뚝배기"
       const candidates = existingStores.filter(store => 
         store.name.includes(guessed) || guessed.includes(store.name)
       );
@@ -107,10 +92,8 @@ export function parseFileNameInfo(fileName, existingStores = []) {
       if (candidates.length === 1) {
         detectedStoreName = candidates[0].name;
       } else if (candidates.length > 1) {
-        // Resolve ambiguous matches like "금막창" matching "금막창 종로점" etc.
         const branchMatch = candidates.find(c => {
-          // Remove the matched keyword and check if branch suffix is in filename
-          const branchPart = c.name.replace(guessed, "").trim(); // e.g. "종로점"
+          const branchPart = c.name.replace(guessed, "").trim();
           const cleanBranch = branchPart.replace("점", "").trim();
           return cleanBranch && nameWithoutExt.includes(cleanBranch);
         });
@@ -132,7 +115,7 @@ export function parseFileNameInfo(fileName, existingStores = []) {
 }
 
 // Utility to parse dates in different formats
-function parseDateString(val) {
+export function parseDateString(val) {
   if (val instanceof Date) {
     try {
       const y = val.getFullYear();
@@ -147,14 +130,12 @@ function parseDateString(val) {
   let str = String(val || "").trim();
   if (!str) return null;
 
-  // Remove time part if exists (e.g. "2024-11-01 12:00:00" -> "2024-11-01")
   const timeIndex = str.search(/\s+\d{1,2}:\d{2}/);
   if (timeIndex !== -1) {
     str = str.substring(0, timeIndex).trim();
   }
 
-  // Pattern 1: YYYY-MM-DD or YYYY/MM/DD, optionally followed by (Mon) or (월)
-  // E.g., "2024-11-01 (금)", "2024/11/01"
+  // Pattern 1: YYYY-MM-DD or YYYY/MM/DD
   const m1 = str.match(/^(\d{2,4})[-/](\d{1,2})[-/](\d{1,2})(?:\s*\([^)]+\))?$/);
   if (m1) {
     let year = m1[1];
@@ -162,8 +143,7 @@ function parseDateString(val) {
     return `${year}-${m1[2].padStart(2, "0")}-${m1[3].padStart(2, "0")}`;
   }
 
-  // Pattern 2: YYYY.MM.DD or YY.MM.DD, optionally with spaces and trailing dot
-  // E.g., "2024.11.01", "24. 11. 01.", "2024.11.01 (금)"
+  // Pattern 2: YYYY.MM.DD
   const m2 = str.match(/^(\d{2,4})\s*\.\s*(\d{1,2})\s*\.\s*(\d{1,2})\s*\.?(?:\s*\([^)]+\))?$/);
   if (m2) {
     let year = m2[1];
@@ -171,8 +151,7 @@ function parseDateString(val) {
     return `${year}-${m2[2].padStart(2, "0")}-${m2[3].padStart(2, "0")}`;
   }
 
-  // Pattern 3: YYYY년 MM월 DD일 or YY년 MM월 DD일
-  // E.g., "2024년 11월 01일", "24년 11월 1일"
+  // Pattern 3: YYYY년 MM월 DD일
   const m3 = str.match(/^(\d{2,4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일?$/);
   if (m3) {
     let year = m3[1];
@@ -189,18 +168,22 @@ function parseDateString(val) {
   return null;
 }
 
-// Utility to parse numeric values from Excel cells (strips commas)
-function parseNumeric(val) {
+// Utility to parse numeric values from Excel cells (strips commas, currency signs)
+export function parseNumeric(val) {
   if (typeof val === "number") return val;
   if (!val) return 0;
-  const cleanStr = String(val).replace(/,/g, "").trim();
+  const cleanStr = String(val).replace(/[^\d.-]/g, "").trim();
   const num = parseFloat(cleanStr);
   return isNaN(num) ? 0 : num;
 }
 
 /**
  * Parses OKPOS sales excel file.
- * Handles both Standard List format and Horizontal Pivot format dynamically.
+ * Handles:
+ * 1. 일기간 (시간대별) 포맷 -> 아침 / 점심 / 저녁 / 전체
+ * 2. 상품 ABC 분석 포맷 -> 등급, 상품명, 실매출액, 판매수량, 점유율
+ * 3. Horizontal Pivot 포맷
+ * 4. Standard Flat List 포맷
  */
 export function parseOKPOSExcel(file) {
   return new Promise((resolve, reject) => {
@@ -221,8 +204,275 @@ export function parseOKPOSExcel(file) {
           throw new Error("엑셀 파일에 데이터가 없거나 형식이 다릅니다.");
         }
 
-        // 2. Detect format type: Standard List vs Horizontal Pivot
-        // We count date cells in the first row (row index 0)
+        // Check first 10 rows for keywords
+        let allTextInHeader = "";
+        for (let r = 0; r < Math.min(allRows.length, 12); r++) {
+          allTextInHeader += " " + allRows[r].join(" ");
+        }
+
+        const cleanHeaderText = allTextInHeader.replace(/\s+/g, " ");
+
+        // =========================================================================
+        // CASE A: 시간대별 매출 리포트 ("일기간 (시간대별)")
+        // =========================================================================
+        const isTimeSlotReport = cleanHeaderText.includes("시간대별") || 
+                                (cleanHeaderText.includes("시간대") && cleanHeaderText.includes("영수건수") && cleanHeaderText.includes("실매출"));
+
+        if (isTimeSlotReport) {
+          // Extract date from "조회일자 : 2026-09-26 ~ 2026-09-26" or similar
+          let reportDate = null;
+          let reportDateRange = null;
+
+          const dateRangeMatch = cleanHeaderText.match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})\s*~\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})/);
+          if (dateRangeMatch) {
+            const startD = parseDateString(dateRangeMatch[1]);
+            const endD = parseDateString(dateRangeMatch[2]);
+            reportDate = startD || endD;
+            reportDateRange = { start: startD, end: endD };
+          } else {
+            const singleDateMatch = cleanHeaderText.match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})/);
+            if (singleDateMatch) {
+              reportDate = parseDateString(singleDateMatch[1]);
+            }
+          }
+
+          if (!reportDate) {
+            const fileInfo = parseFileNameInfo(file.name);
+            reportDate = `${fileInfo.period}-01`;
+          }
+
+          // Locate table header row with "No.", "시간대", "영수건수", "실매출", "영수단가"
+          let headerRowIdx = -1;
+          let colIdxMap = { no: -1, timeSlot: -1, count: -1, sales: -1, avgPrice: -1 };
+
+          for (let r = 0; r < Math.min(allRows.length, 20); r++) {
+            const row = allRows[r].map(c => String(c || "").trim().replace(/\s+/g, ""));
+            const timeCol = row.findIndex(c => c.includes("시간대") || c === "시간");
+            const salesCol = row.findIndex(c => c.includes("실매출") || c.includes("매출액"));
+            const countCol = row.findIndex(c => c.includes("영수건수") || c.includes("건수"));
+
+            if (timeCol !== -1 && (salesCol !== -1 || countCol !== -1)) {
+              headerRowIdx = r;
+              colIdxMap.timeSlot = timeCol;
+              colIdxMap.sales = salesCol !== -1 ? salesCol : timeCol + 2;
+              colIdxMap.count = countCol !== -1 ? countCol : timeCol + 1;
+              colIdxMap.avgPrice = row.findIndex(c => c.includes("단가") || c.includes("영수단가"));
+              break;
+            }
+          }
+
+          if (headerRowIdx === -1) {
+            // fallback standard column positions
+            headerRowIdx = 4;
+            colIdxMap = { no: 0, timeSlot: 1, count: 2, sales: 3, avgPrice: 4 };
+          }
+
+          let morningSales = 0, morningCount = 0;
+          let lunchSales = 0, lunchCount = 0;
+          let dinnerSales = 0, dinnerCount = 0;
+          let totalSales = 0, totalCount = 0;
+
+          const parsedRows = [];
+
+          for (let r = headerRowIdx + 1; r < allRows.length; r++) {
+            const row = allRows[r];
+            if (!row || row.length === 0) continue;
+
+            const timeSlotText = String(row[colIdxMap.timeSlot] || "").trim();
+            if (!timeSlotText) continue;
+
+            const countVal = parseNumeric(row[colIdxMap.count]);
+            const salesVal = parseNumeric(row[colIdxMap.sales]);
+            const avgPriceVal = colIdxMap.avgPrice !== -1 ? parseNumeric(row[colIdxMap.avgPrice]) : (countVal > 0 ? Math.round(salesVal / countVal) : 0);
+
+            if (timeSlotText.includes("전체") || timeSlotText.includes("합계")) {
+              totalSales = salesVal;
+              totalCount = countVal;
+            } else if (timeSlotText.includes("아침") || timeSlotText.includes("06~11") || timeSlotText.includes("06 ~ 11")) {
+              morningSales += salesVal;
+              morningCount += countVal;
+              parsedRows.push({
+                date: reportDate,
+                category: "시간대_아침",
+                itemCode: "TIME-MORN",
+                itemName: "아침 [06 ~ 11]",
+                timeSlot: "morning",
+                quantity: countVal,
+                totalSales: salesVal,
+                discount: 0,
+                netSales: salesVal,
+                avgPrice: avgPriceVal
+              });
+            } else if (timeSlotText.includes("점심") || timeSlotText.includes("11~16") || timeSlotText.includes("11 ~ 16")) {
+              lunchSales += salesVal;
+              lunchCount += countVal;
+              parsedRows.push({
+                date: reportDate,
+                category: "시간대_점심",
+                itemCode: "TIME-LUNCH",
+                itemName: "점심 [11 ~ 16]",
+                timeSlot: "lunch",
+                quantity: countVal,
+                totalSales: salesVal,
+                discount: 0,
+                netSales: salesVal,
+                avgPrice: avgPriceVal
+              });
+            } else if (timeSlotText.includes("저녁") || timeSlotText.includes("16~24") || timeSlotText.includes("16 ~ 24") || timeSlotText.includes("야간")) {
+              dinnerSales += salesVal;
+              dinnerCount += countVal;
+              parsedRows.push({
+                date: reportDate,
+                category: "시간대_저녁",
+                itemCode: "TIME-DINNER",
+                itemName: "저녁 [16 ~ 24]",
+                timeSlot: "dinner",
+                quantity: countVal,
+                totalSales: salesVal,
+                discount: 0,
+                netSales: salesVal,
+                avgPrice: avgPriceVal
+              });
+            } else {
+              // Custom hourly slot
+              parsedRows.push({
+                date: reportDate,
+                category: "시간대_기타",
+                itemCode: `TIME-${r}`,
+                itemName: timeSlotText,
+                timeSlot: "other",
+                quantity: countVal,
+                totalSales: salesVal,
+                discount: 0,
+                netSales: salesVal,
+                avgPrice: avgPriceVal
+              });
+            }
+          }
+
+          if (parsedRows.length > 0) {
+            parsedRows.isTimeSlotReport = true;
+            parsedRows.timeSlotSummary = {
+              date: reportDate,
+              dateRange: reportDateRange,
+              morningSales,
+              morningCount,
+              lunchSales,
+              lunchCount,
+              morningLunchSales: morningSales + lunchSales,
+              morningLunchCount: morningCount + lunchCount,
+              dinnerSales,
+              dinnerCount,
+              totalSales: totalSales || (morningSales + lunchSales + dinnerSales),
+              totalCount: totalCount || (morningCount + lunchCount + dinnerCount)
+            };
+            resolve(parsedRows);
+            return;
+          }
+        }
+
+        // =========================================================================
+        // CASE B: 상품 ABC 분석 리포트 ("매출관리 > 매출분석 > 상품ABC분석")
+        // =========================================================================
+        const isAbcReport = cleanHeaderText.includes("ABC분석") || 
+                           cleanHeaderText.includes("상품ABC") || 
+                           (cleanHeaderText.includes("등급") && cleanHeaderText.includes("점유율") && cleanHeaderText.includes("실매출액"));
+
+        if (isAbcReport) {
+          let reportDate = null;
+          let reportDateRange = null;
+
+          const dateRangeMatch = cleanHeaderText.match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})\s*~\s*(\d{4}[-./]\d{1,2}[-./]\d{1,2})/);
+          if (dateRangeMatch) {
+            const startD = parseDateString(dateRangeMatch[1]);
+            const endD = parseDateString(dateRangeMatch[2]);
+            reportDate = startD || endD;
+            reportDateRange = { start: startD, end: endD };
+          } else {
+            const singleDateMatch = cleanHeaderText.match(/(\d{4}[-./]\d{1,2}[-./]\d{1,2})/);
+            if (singleDateMatch) {
+              reportDate = parseDateString(singleDateMatch[1]);
+            }
+          }
+
+          if (!reportDate) {
+            const fileInfo = parseFileNameInfo(file.name);
+            reportDate = `${fileInfo.period}-01`;
+          }
+
+          let headerRowIdx = -1;
+          let colIdxMap = { grade: -1, rank: -1, category: -1, code: -1, name: -1, sales: -1, qty: -1, share: -1 };
+
+          for (let r = 0; r < Math.min(allRows.length, 20); r++) {
+            const row = allRows[r].map(c => String(c || "").trim().replace(/\s+/g, ""));
+            const gradeCol = row.findIndex(c => c.includes("등급"));
+            const nameCol = row.findIndex(c => c.includes("상품명") || c.includes("메뉴명") || c.includes("품명"));
+            const salesCol = row.findIndex(c => c.includes("실매출") || c.includes("매출액"));
+
+            if (gradeCol !== -1 && nameCol !== -1 && salesCol !== -1) {
+              headerRowIdx = r;
+              colIdxMap.grade = gradeCol;
+              colIdxMap.rank = row.findIndex(c => c.includes("No") || c === "순위" || c === "번호");
+              colIdxMap.category = row.findIndex(c => c.includes("대분류") || c.includes("분류") || c.includes("카테고리"));
+              colIdxMap.code = row.findIndex(c => c.includes("상품코드") || c.includes("코드"));
+              colIdxMap.name = nameCol;
+              colIdxMap.sales = salesCol;
+              colIdxMap.qty = row.findIndex(c => c.includes("판매수량") || c.includes("수량"));
+              colIdxMap.share = row.findIndex(c => c.includes("점유율") || c.includes("비율"));
+              break;
+            }
+          }
+
+          if (headerRowIdx === -1) {
+            headerRowIdx = 4;
+            colIdxMap = { grade: 0, rank: 1, category: 2, code: 3, name: 4, sales: 5, qty: 6, share: 7 };
+          }
+
+          const parsedRows = [];
+          for (let r = headerRowIdx + 1; r < allRows.length; r++) {
+            const row = allRows[r];
+            if (!row || row.length === 0) continue;
+
+            const name = String(row[colIdxMap.name] || "").trim();
+            if (!name || name.includes("합계") || name.includes("소계")) continue;
+
+            const grade = String(row[colIdxMap.grade] || "C").trim().toUpperCase();
+            const category = colIdxMap.category !== -1 ? String(row[colIdxMap.category] || "메뉴").trim() : "메뉴";
+            const code = colIdxMap.code !== -1 ? String(row[colIdxMap.code] || "").trim() : "";
+            const sales = parseNumeric(row[colIdxMap.sales]);
+            const qty = colIdxMap.qty !== -1 ? Math.round(parseNumeric(row[colIdxMap.qty])) : 1;
+            const share = colIdxMap.share !== -1 ? parseNumeric(row[colIdxMap.share]) : 0;
+
+            parsedRows.push({
+              date: reportDate,
+              category: category || "메뉴",
+              itemCode: code || `ITEM-${r}`,
+              itemName: name,
+              quantity: qty || 1,
+              totalSales: sales,
+              discount: 0,
+              netSales: sales,
+              grade: grade || "C",
+              sharePercent: share
+            });
+          }
+
+          if (parsedRows.length > 0) {
+            parsedRows.isAbcReport = true;
+            parsedRows.abcSummary = {
+              date: reportDate,
+              dateRange: reportDateRange,
+              itemCount: parsedRows.length,
+              totalSales: parsedRows.reduce((sum, r) => sum + r.netSales, 0)
+            };
+            resolve(parsedRows);
+            return;
+          }
+        }
+
+        // =========================================================================
+        // CASE C: Horizontal Pivot (가로 피벗) vs Standard Flat List (표준 리스트)
+        // =========================================================================
         let dateCellCount = 0;
         for (let c = 0; c < allRows[0].length; c++) {
           if (parseDateString(allRows[0][c])) {
@@ -234,14 +484,6 @@ export function parseOKPOSExcel(file) {
         const parsedRows = [];
 
         if (isHorizontalPivot) {
-          // ----------------------------------------------------
-          // PARSE HORIZONTAL PIVOT FORMAT (e.g. 금등어)
-          // ----------------------------------------------------
-          // Row 0 has dates (merged)
-          // Row 1 has sub-headers (수량, 총매출액, NET매출액...)
-          // Row 2 starts the data
-          
-          // Map of column groups by date
           const columnMaps = {};
           let currentDate = null;
 
@@ -268,7 +510,6 @@ export function parseOKPOSExcel(file) {
             }
           }
 
-          // Resolve metadata columns (Category, Item Name, Item Code) from Row 0
           let categoryColIndex = -1;
           let nameColIndex = -1;
           let codeColIndex = -1;
@@ -288,13 +529,11 @@ export function parseOKPOSExcel(file) {
           if (nameColIndex === -1) nameColIndex = 3;
           if (codeColIndex === -1) codeColIndex = 4;
 
-          // Parse data rows starting from row index 2 (3rd row)
           for (let r = 2; r < allRows.length; r++) {
             const rowData = allRows[r];
             if (!rowData || rowData.length === 0) continue;
 
             const itemName = String(rowData[nameColIndex] || "").trim();
-            // Skip empty/summary rows
             if (!itemName || itemName.includes("합계") || itemName.includes("소계")) {
               continue;
             }
@@ -302,7 +541,6 @@ export function parseOKPOSExcel(file) {
             const category = String(rowData[categoryColIndex] || "기타").trim();
             const itemCode = String(rowData[codeColIndex] || "N/A").trim();
 
-            // Loop over dates
             Object.keys(columnMaps).forEach(date => {
               const map = columnMaps[date];
               const qtyVal = map.quantity !== -1 ? rowData[map.quantity] : 0;
@@ -331,9 +569,7 @@ export function parseOKPOSExcel(file) {
           }
 
         } else {
-          // ----------------------------------------------------
-          // PARSE STANDARD FLAT LIST FORMAT (e.g. 신영웅)
-          // ----------------------------------------------------
+          // Standard flat list format
           let headerRowIndex = -1;
           for (let r = 0; r < Math.min(allRows.length, 40); r++) {
             const rowCells = allRows[r].map(c => String(c || "").trim().replace(/\s+/g, ""));
@@ -369,7 +605,6 @@ export function parseOKPOSExcel(file) {
             return undefined;
           };
 
-          // To propagate date downwards for merged cells / missing cell values in OKPOS tables
           let lastValidDate = null;
 
           for (let i = 0; i < rawJson.length; i++) {
@@ -382,7 +617,6 @@ export function parseOKPOSExcel(file) {
             
             let dateStr = String(rawDate || "").trim();
 
-            // Forward fill missing date cell values
             if (!dateStr && lastValidDate) {
               dateStr = lastValidDate;
             }
@@ -396,7 +630,6 @@ export function parseOKPOSExcel(file) {
               formattedDate = dateStr;
             }
 
-            // Save the last valid formatted date
             if (formattedDate && !formattedDate.includes("합계") && !formattedDate.includes("소계")) {
               lastValidDate = formattedDate;
             }
@@ -425,7 +658,7 @@ export function parseOKPOSExcel(file) {
         }
 
         if (parsedRows.length === 0) {
-          throw new Error("OKPOS 형식의 매출 행을 찾을 수 없습니다. 헤더를 확인해 주세요.");
+          throw new Error("OKPOS 형식의 매출 행을 찾을 수 없습니다. 엑셀 파일 형식을 확인해 주세요.");
         }
 
         resolve(parsedRows);
@@ -610,8 +843,7 @@ export function parseCostExcel(file) {
       }
     };
     
-    reader.onerror = (e) => reject(new Error("파일 읽기 실패"));
+    reader.onerror = () => reject(new Error("파일 읽기 실패"));
     reader.readAsBinaryString(file);
   });
 }
-
