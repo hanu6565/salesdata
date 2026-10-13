@@ -47,7 +47,8 @@ import {
   Check,
   Layers,
   ArrowUpRight,
-  ArrowDownRight
+  ArrowDownRight,
+  UtensilsCrossed
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -74,6 +75,27 @@ import {
 import { INITIAL_STORES, STORE_TIME_PROFILES, generateMockSalesData } from "./mockData";
 import { parseOKPOSExcel, parseFileNameInfo, parseCostExcel } from "./excelParser";
 import { DEFAULT_COST_DATA } from "./mockCostData";
+import { STORES_MASTER } from "../lib/storesConfig";
+import { ROLES, MOCK_USERS, enforceDataPermission, canAccessStore } from "../lib/permissions";
+import dynamic from "next/dynamic";
+import RoleSwitcher from "./components/RoleSwitcher";
+
+// Vercel bundle optimization: Lazy-load heavy views and modals on demand
+const DataQualityView = dynamic(() => import("./components/DataQualityView"), {
+  loading: () => <div className="p-12 text-center text-slate-400 animate-pulse">데이터 품질 진단 모듈 로딩 중...</div>
+});
+const OperationsAnalysisView = dynamic(() => import("./components/OperationsAnalysisView"), {
+  loading: () => <div className="p-12 text-center text-slate-400 animate-pulse">운영 분석 모듈 로딩 중...</div>
+});
+const AutoCollectionView = dynamic(() => import("./components/AutoCollectionView"), {
+  loading: () => <div className="p-12 text-center text-slate-400 animate-pulse">자동 수집 관제탑 로딩 중...</div>
+});
+const ForecastingProfitabilityView = dynamic(() => import("./components/ForecastingProfitabilityView"), {
+  loading: () => <div className="p-12 text-center text-slate-400 animate-pulse">손익 예측 모듈 로딩 중...</div>
+});
+const StageAuditModal = dynamic(() => import("./components/StageAuditModal"), { ssr: false });
+const PreUploadModal = dynamic(() => import("./components/PreUploadModal"), { ssr: false });
+const CommonMenuMappingModal = dynamic(() => import("./components/CommonMenuMappingModal"), { ssr: false });
 import { 
   loadStoresFromSupabase, 
   saveStoresToSupabase, 
@@ -206,10 +228,26 @@ export default function App() {
   const [costData, setCostData] = useState({});
 
   // UI Navigation states
-  const [globalTab, setGlobalTab] = useState("dashboard"); // "dashboard" | "pivot" | "upload" | "cost"
+  const [globalTab, setGlobalTab] = useState("dashboard"); // "dashboard" | "operations" | "data_quality" | "auto_collection" | "forecasting" | "upload" | "cost"
   const [selectedStoreId, setSelectedStoreId] = useState("total"); // "total" | storeId
   const [costTab, setCostTab] = useState("trend"); // "trend" | "breakdown" | "setup"
   const [costSelectedPeriod, setCostSelectedPeriod] = useState("");
+
+  // Role-Based Access Control and Modals State
+  const [currentUser, setCurrentUser] = useState(MOCK_USERS[0]);
+  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [isMenuMappingModalOpen, setIsMenuMappingModalOpen] = useState(false);
+  const [isPreUploadModalOpen, setIsPreUploadModalOpen] = useState(false);
+  const [stagedPreUpload, setStagedPreUpload] = useState(null);
+
+  const handleSelectUser = (user) => {
+    setCurrentUser(user);
+    if (user.role === ROLES.STORE_MANAGER && user.authorizedStoreIds && user.authorizedStoreIds[0]) {
+      setSelectedStoreId(user.authorizedStoreIds[0]);
+    } else {
+      setSelectedStoreId("total");
+    }
+  };
   
   // Filters
   const [selectedPeriod, setSelectedPeriod] = useState("all"); // Default to "all" (전체 기간)
@@ -673,50 +711,24 @@ export default function App() {
   const handleIndividualUpload = async (store, file) => {
     if (!file) return;
     try {
-      setUploadStatusMsg({ type: "info", text: "파일을 읽고 분석하는 중..." });
+      setUploadStatusMsg({ type: "info", text: "파일을 읽고 정밀 분석하는 중..." });
       
       const fileInfo = parseFileNameInfo(file.name, stores);
       const parsedRows = await parseOKPOSExcel(file);
-      
-      const totalSales = parsedRows.reduce((sum, r) => sum + r.netSales, 0);
-      const rowCount = parsedRows.length;
-      
-      const monthsInRows = new Set();
-      parsedRows.forEach(row => {
-        if (row.date) {
-          monthsInRows.add(row.date.substring(0, 7));
+
+      setStagedPreUpload({
+        file,
+        parsedRows,
+        fileInfo: {
+          name: file.name,
+          storeId: store.id || fileInfo.storeId,
+          storeName: store.name || fileInfo.storeName,
+          period: fileInfo.period,
+          matchReason: `개별 지점(${store.name}) 업로드 선택`,
+          isAmbiguous: false
         }
       });
-      if (monthsInRows.size === 0) {
-        monthsInRows.add(fileInfo.period);
-      }
-      
-      const sortedMonths = Array.from(monthsInRows).sort();
-      let displayPeriod = fileInfo.period;
-      if (sortedMonths.length > 1) {
-        displayPeriod = `${sortedMonths[0]} ~ ${sortedMonths[sortedMonths.length - 1]}`;
-      } else if (sortedMonths.length === 1) {
-        displayPeriod = sortedMonths[0];
-      }
-
-      const pendingFile = {
-        name: file.name,
-        parsedRows,
-        originalStoreName: store.name,
-        matchedStoreId: store.id,
-        period: displayPeriod,
-        totalSales,
-        rowCount
-      };
-
-      setPendingUploadPackage({
-        files: [pendingFile],
-        currentStores: [...stores],
-        currentSales: [...salesRecords],
-        currentUploads: [...uploadLogs],
-        isIndividual: true
-      });
-      
+      setIsPreUploadModalOpen(true);
       setUploadStatusMsg({ type: "", text: "" });
     } catch (err) {
       console.error(err);
@@ -724,6 +736,7 @@ export default function App() {
         type: "error",
         text: `[${store.name}] 파일 파싱 실패: ${err.message}`
       });
+      setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 6000);
     }
   };
 
@@ -754,88 +767,35 @@ export default function App() {
   };
 
   const processUploadedFiles = async (files) => {
-    setUploadStatusMsg({ type: "info", text: "파일들을 읽고 분석하는 중..." });
-    let errors = [];
-    let pendingFiles = [];
+    setUploadStatusMsg({ type: "info", text: "파일을 정밀 분석 중..." });
+    if (!files || files.length === 0) return;
 
-    let currentStores = [...stores];
-    let currentSales = [...salesRecords];
-    let currentUploads = [...uploadLogs];
+    try {
+      const file = files[0];
+      const fileInfo = parseFileNameInfo(file.name, stores);
+      const parsedRows = await parseOKPOSExcel(file);
 
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      try {
-        const { storeName, period } = parseFileNameInfo(file.name, currentStores);
-        const parsedRows = await parseOKPOSExcel(file);
-        
-        const totalSales = parsedRows.reduce((sum, r) => sum + r.netSales, 0);
-        const rowCount = parsedRows.length;
-
-        const monthsInRows = new Set();
-        parsedRows.forEach(row => {
-          if (row.date) {
-            monthsInRows.add(row.date.substring(0, 7));
-          }
-        });
-        if (monthsInRows.size === 0) {
-          monthsInRows.add(period);
-        }
-
-        const sortedMonths = Array.from(monthsInRows).sort();
-        let displayPeriod = period;
-        if (sortedMonths.length > 1) {
-          displayPeriod = `${sortedMonths[0]} ~ ${sortedMonths[sortedMonths.length - 1]}`;
-        } else if (sortedMonths.length === 1) {
-          displayPeriod = sortedMonths[0];
-        }
-
-        const matchedStore = currentStores.find(s => s.name === storeName);
-        const matchedStoreId = matchedStore ? matchedStore.id : "new";
-
-        pendingFiles.push({
+      setStagedPreUpload({
+        file,
+        parsedRows,
+        fileInfo: {
           name: file.name,
-          parsedRows,
-          originalStoreName: storeName,
-          matchedStoreId,
-          period: displayPeriod,
-          totalSales,
-          rowCount
-        });
-
-      } catch (err) {
-        console.error(err);
-        errors.push(`${file.name}: ${err.message}`);
-        
-        const newLog = {
-          id: `upload-err-${Date.now()}-${i}-${Math.random().toString(36).substr(2, 9)}`,
-          storeId: "unknown",
-          storeName: file.name.substring(0, 15),
-          fileName: file.name,
-          period: "오류",
-          rowCount: 0,
-          uploadTime: new Date().toISOString(),
-          status: `오류: ${err.message.substring(0, 20)}`
-        };
-        currentUploads = [newLog, ...currentUploads];
-      }
-    }
-
-    if (pendingFiles.length > 0) {
-      setPendingUploadPackage({
-        files: pendingFiles,
-        currentStores,
-        currentSales,
-        currentUploads,
-        errors
+          storeId: fileInfo.storeId,
+          storeName: fileInfo.storeName,
+          period: fileInfo.period,
+          matchReason: fileInfo.matchReason,
+          isAmbiguous: fileInfo.isAmbiguous
+        }
       });
+      setIsPreUploadModalOpen(true);
       setUploadStatusMsg({ type: "", text: "" });
-    } else {
-      saveStateToLocal(currentStores, currentSales, currentUploads);
+    } catch (err) {
+      console.error(err);
       setUploadStatusMsg({
         type: "error",
-        text: `파일 분석 실패. (${errors.join(", ")})`
+        text: `파일 분석 실패: ${err.message}`
       });
-      setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 7000);
+      setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 6000);
     }
   };
 
@@ -923,10 +883,14 @@ export default function App() {
   };
 
   // ----------------------------------------------------
-  // FILTERED SALES DATA CALCULATION
+  // PERMISSION GUARDED & FILTERED SALES DATA CALCULATION
   // ----------------------------------------------------
+  const displayedSalesRecords = useMemo(() => {
+    return enforceDataPermission(salesRecords, currentUser);
+  }, [salesRecords, currentUser]);
+
   const filteredSalesData = useMemo(() => {
-    return salesRecords.filter(r => {
+    return displayedSalesRecords.filter(r => {
       if (selectedStoreId !== "total" && r.storeId !== selectedStoreId) {
         return false;
       }
@@ -948,35 +912,32 @@ export default function App() {
       }
       return true;
     });
-  }, [salesRecords, selectedStoreId, selectedPeriod, startDate, endDate, selectedCategory]);
+  }, [displayedSalesRecords, selectedStoreId, selectedPeriod, startDate, endDate, selectedCategory]);
 
   // ----------------------------------------------------
   // TOTAL SUMMARY KPI METRICS (Including Formulas)
   // ----------------------------------------------------
   const totalSummary = useMemo(() => {
     let netSales = 0;
+    let totalGrossSales = 0;
     let discount = 0;
     let quantity = 0;
     const uniqueDays = new Set();
+    const dailySalesMap = {};
     
     filteredSalesData.forEach(r => {
       netSales += r.netSales || 0;
+      totalGrossSales += r.totalSales || 0;
       discount += r.discount || 0;
       quantity += r.quantity || 0;
-      if (r.date) uniqueDays.add(r.date);
-    });
-
-    const dayCount = uniqueDays.size || 1;
-    const dailyAvgSales = Math.round(netSales / dayCount);
-
-    // Calculate Peak Sales Day for this store
-    const storeTargetSales = salesRecords.filter(r => selectedStoreId === "total" || r.storeId === selectedStoreId);
-    const dailySalesMap = {};
-    storeTargetSales.forEach(r => {
       if (r.date) {
+        uniqueDays.add(r.date);
         dailySalesMap[r.date] = (dailySalesMap[r.date] || 0) + (r.netSales || 0);
       }
     });
+
+    const dayCount = uniqueDays.size || (filteredSalesData.length > 0 ? 1 : 0);
+    const dailyAvgSales = dayCount > 0 ? Math.round(netSales / dayCount) : 0;
 
     let peakDay = "-";
     let peakSales = 0;
@@ -987,46 +948,17 @@ export default function App() {
       }
     });
 
-    // Current Month metrics based on active data (August 2026)
-    const today = new Date();
-    const currentYear = 2026;
-    const currentMonthNum = 8;
-    const currentMonthStr = "2026-08";
-    const currentMonthLabel = `26년 8월 총매출`;
-
-    let currentMonthSalesSum = 0;
-    const currentMonthDaysWithSales = new Set();
-
-    storeTargetSales.forEach(r => {
-      if (r.date && r.date.startsWith(currentMonthStr)) {
-        currentMonthSalesSum += r.netSales || 0;
-        currentMonthDaysWithSales.add(r.date);
-      }
-    });
-
-    const currentMonthDays = currentMonthDaysWithSales.size || 26;
-    const currentMonthTotalDays = 31; // August has 31 days
-    const currentMonthAvgSales = currentMonthDays > 0 ? (currentMonthSalesSum / currentMonthDays) : 0;
-    
-    // Formula: (조회기준 매출 / 해당일수 * 해당월 총 일수)
-    const currentMonthEstimatedSales = currentMonthAvgSales * currentMonthTotalDays;
-
     return {
       netSales,
+      totalGrossSales,
       discount,
       quantity,
+      dayCount,
       dailyAvgSales,
       peakDay,
-      peakSales,
-      currentMonthLabel,
-      currentMonthNum,
-      currentMonthSalesSum,
-      currentMonthDays,
-      currentMonthTotalDays,
-      currentMonthAvgSales,
-      currentMonthEstimatedSales
+      peakSales
     };
-  }, [filteredSalesData, salesRecords, selectedStoreId]);
+  }, [filteredSalesData]);
 
   // ----------------------------------------------------
   // TIME SLOT TREND DATA (아침+점심 vs 저녁 분리 추이)
@@ -1290,7 +1222,7 @@ export default function App() {
   // Selected Menu Statistics
   const selectedMenuStats = useMemo(() => {
     if (!selectedMenuName || selectedStoreId === "total") return null;
-    const targetRecords = salesRecords.filter(r => r.storeId === selectedStoreId && r.itemName === selectedMenuName);
+    const targetRecords = filteredSalesData.filter(r => r.storeId === selectedStoreId && r.itemName === selectedMenuName);
     if (targetRecords.length === 0) return null;
 
     let totalSales = 0;
@@ -1337,19 +1269,14 @@ export default function App() {
       peakSales,
       storeShare
     };
-  }, [selectedMenuName, selectedStoreId, salesRecords, filteredSalesData, menuAbcAnalysisData]);
+  }, [selectedMenuName, selectedStoreId, filteredSalesData, menuAbcAnalysisData]);
 
   // Selected Menu Trend Chart Data
   const menuTrendChartData = useMemo(() => {
     if (!selectedMenuName || selectedStoreId === "total") return [];
     
-    const filtered = salesRecords.filter(r => {
-      if (r.storeId !== selectedStoreId || r.itemName !== selectedMenuName) return false;
-      if (selectedPeriod !== "all") {
-        if (startDate && r.date < startDate) return false;
-        if (endDate && r.date > endDate) return false;
-      }
-      return true;
+    const filtered = filteredSalesData.filter(r => {
+      return r.storeId === selectedStoreId && r.itemName === selectedMenuName;
     });
 
     if (menuChartPeriod === "daily") {
@@ -1403,7 +1330,7 @@ export default function App() {
         quantity: yearlyMap[y].qty
       }));
     }
-  }, [salesRecords, selectedStoreId, selectedMenuName, menuChartPeriod, selectedPeriod, startDate, endDate]);
+  }, [filteredSalesData, selectedStoreId, selectedMenuName, menuChartPeriod]);
 
   // ----------------------------------------------------
   // WHAT-IF STRATEGY SIMULATOR LOGIC
@@ -1577,10 +1504,10 @@ export default function App() {
           </div>
 
           {/* Global Mode Tabs */}
-          <nav className="flex items-center bg-[#131722] p-1 rounded-xl border border-white/5 text-xs">
+          <nav className="flex items-center bg-[#131722] p-1 rounded-xl border border-white/5 text-xs flex-wrap gap-1">
             <button
               onClick={() => setGlobalTab("dashboard")}
-              className={`px-3.5 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
                 globalTab === "dashboard"
                   ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
                   : "text-slate-400 hover:text-slate-200"
@@ -1590,8 +1517,52 @@ export default function App() {
               대시보드
             </button>
             <button
+              onClick={() => setGlobalTab("operations")}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                globalTab === "operations"
+                  ? "bg-cyan-600 text-white shadow-md shadow-cyan-600/30"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400" />
+              운영 비교 분석 (2단계)
+            </button>
+            <button
+              onClick={() => setGlobalTab("data_quality")}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                globalTab === "data_quality"
+                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-indigo-400" />
+              품질·3-Way대조 (1단계)
+            </button>
+            <button
+              onClick={() => setGlobalTab("auto_collection")}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                globalTab === "auto_collection"
+                  ? "bg-purple-600 text-white shadow-md shadow-purple-600/30"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-purple-400" />
+              자동수집 타워 (3단계)
+            </button>
+            <button
+              onClick={() => setGlobalTab("forecasting")}
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+                globalTab === "forecasting"
+                  ? "bg-emerald-600 text-white shadow-md shadow-emerald-600/30"
+                  : "text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              매출예측·수익성 (4단계)
+            </button>
+            <button
               onClick={() => setGlobalTab("upload")}
-              className={`px-3.5 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
+              className={`px-3 py-1.5 rounded-lg font-bold transition-all flex items-center gap-1.5 ${
                 globalTab === "upload"
                   ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
                   : "text-slate-400 hover:text-slate-200"
@@ -1600,36 +1571,60 @@ export default function App() {
               <Upload className="w-3.5 h-3.5" />
               엑셀 업로드
             </button>
+          </nav>
+
+          {/* Top Quick Actions: Stage Audit, Menu Mappings, Role Switcher */}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsAuditModalOpen(true)}
+              className="px-3 py-1.5 rounded-xl bg-gradient-to-r from-amber-600 to-amber-700 hover:from-amber-500 hover:to-amber-600 text-white text-xs font-bold shadow-md shadow-amber-600/20 transition-all flex items-center gap-1.5"
+            >
+              <Award className="w-3.5 h-3.5 text-amber-200" />
+              <span>4단계 종합 검증</span>
+            </button>
+            <button
+              onClick={() => setIsMenuMappingModalOpen(true)}
+              className="px-2.5 py-1.5 rounded-xl bg-slate-900 border border-slate-700/80 hover:border-slate-600 text-slate-300 text-xs font-semibold transition-all flex items-center gap-1"
+              title="공통 메뉴 매핑 사전"
+            >
+              <UtensilsCrossed className="w-3.5 h-3.5 text-indigo-400" />
+              <span className="hidden xl:inline">메뉴 매핑</span>
+            </button>
+            <RoleSwitcher currentUser={currentUser} onSelectUser={handleSelectUser} />
             <button
               onClick={handleLogout}
-              className="px-2.5 py-1.5 rounded-lg text-slate-500 hover:text-rose-400 transition-colors ml-1"
+              className="px-2 py-1.5 rounded-xl text-slate-500 hover:text-rose-400 transition-colors"
               title="로그아웃"
             >
               <Lock className="w-3.5 h-3.5" />
             </button>
-          </nav>
+          </div>
         </div>
       </header>
 
       {/* ----------------------------------------------------
           SUB-HEADER: STORE SELECTOR & DATE RANGE CONTROLS
           ---------------------------------------------------- */}
-      {globalTab === "dashboard" && (
+      {(globalTab === "dashboard" || globalTab === "operations" || globalTab === "data_quality" || globalTab === "forecasting") && (
         <div className="bg-[#0c0f17] border-b border-white/5 px-4 py-3 lg:px-6 flex flex-col lg:flex-row gap-4 items-start lg:items-center justify-between">
           {/* Store Tabs Horizontal Slider */}
           <div className="flex items-center gap-1.5 overflow-x-auto custom-scrollbar w-full lg:w-auto pb-1 lg:pb-0">
-            <button
-              onClick={() => setSelectedStoreId("total")}
-              className={`flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
-                selectedStoreId === "total"
-                  ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
-                  : "bg-[#131722] text-slate-400 hover:text-slate-200 border border-white/5"
-              }`}
-            >
-              <Layers className="w-3.5 h-3.5" />
-              전체 매장 통합
-            </button>
-            {stores.map((store) => (
+            {currentUser.role === ROLES.HQ_MASTER && (
+              <button
+                onClick={() => setSelectedStoreId("total")}
+                className={`flex-shrink-0 px-3.5 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center gap-1.5 ${
+                  selectedStoreId === "total"
+                    ? "bg-indigo-600 text-white shadow-md shadow-indigo-600/30"
+                    : "bg-[#131722] text-slate-400 hover:text-slate-200 border border-white/5"
+                }`}
+              >
+                <Layers className="w-3.5 h-3.5" />
+                전체 매장 통합 (7)
+              </button>
+            )}
+            {stores
+              .filter(store => canAccessStore(currentUser, store.id))
+              .map((store) => (
               <div
                 key={store.id}
                 onClick={() => setSelectedStoreId(store.id)}
@@ -1640,6 +1635,11 @@ export default function App() {
                 }`}
               >
                 <span>{store.name}</span>
+                {store.posSite && (
+                  <span className="text-[9px] font-mono text-cyan-300 bg-cyan-950/80 px-1 py-0.2 rounded border border-cyan-800/40">
+                    {store.posSite.split(" ")[0]}
+                  </span>
+                )}
                 <button
                   onClick={(e) => handleOpenEditStore(store, e)}
                   className="hover:text-amber-400 p-0.5 text-slate-500 ml-1"
@@ -1882,28 +1882,28 @@ export default function App() {
                 1. TOP 4 KEY KPI CARDS
                 ---------------------------------------------------- */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-              {/* 1. 해당월의 일매출 총합 */}
+              {/* 1. 선택 기간 실매출 합계 */}
               <div className="glass-card p-5 rounded-2xl border-l-4 border-l-indigo-500 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between text-slate-400 text-xs font-semibold">
-                    <span>해당월 일매출 총합</span>
+                    <span>선택 기간 실매출 합계</span>
                     <DollarSign className="w-4 h-4 text-indigo-400" />
                   </div>
                   <h3 className="text-2xl font-black text-white mt-2">
-                    {formatRawWon(totalSummary.currentMonthSalesSum)}
+                    {formatRawWon(totalSummary.netSales)}
                   </h3>
                 </div>
                 <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-400">
-                  <span>선택 기간 실매출액</span>
-                  <span className="font-bold text-indigo-300">{formatRawWon(totalSummary.netSales)}</span>
+                  <span>총매출 {formatRawWon(totalSummary.totalGrossSales || totalSummary.netSales)}</span>
+                  <span className="text-rose-400 font-medium">할인 -{formatRawWon(totalSummary.discount)}</span>
                 </div>
               </div>
 
-              {/* 2. 일평균 매출 */}
+              {/* 2. 일평균 실매출 */}
               <div className="glass-card p-5 rounded-2xl border-l-4 border-l-cyan-500 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between text-slate-400 text-xs font-semibold">
-                    <span>일평균 매출</span>
+                    <span>일평균 실매출</span>
                     <TrendingUp className="w-4 h-4 text-cyan-400" />
                   </div>
                   <h3 className="text-2xl font-black text-cyan-300 mt-2">
@@ -1912,37 +1912,37 @@ export default function App() {
                 </div>
                 <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-400">
                   <span>분석 영업일수</span>
-                  <span className="font-bold text-white">{totalSummary.currentMonthDays}일 기준</span>
+                  <span className="font-bold text-white">{totalSummary.dayCount}일 기준</span>
                 </div>
               </div>
 
-              {/* 3. 예상매출 (조회기준 매출 / 해당일수 * 해당월 총 일수) */}
+              {/* 3. 총 판매 수량 */}
               <div className="glass-card p-5 rounded-2xl border-l-4 border-l-purple-500 flex flex-col justify-between relative overflow-hidden">
                 <div className="absolute top-0 right-0 w-24 h-24 bg-purple-500/10 rounded-full blur-xl pointer-events-none"></div>
                 <div>
                   <div className="flex items-center justify-between text-slate-400 text-xs font-semibold">
                     <span className="flex items-center gap-1">
                       <Target className="w-3.5 h-3.5 text-purple-400" />
-                      당월 예상 매출
+                      총 판매 수량
                     </span>
                     <span className="text-[9px] bg-purple-500/20 text-purple-300 px-1.5 py-0.5 rounded font-bold">
-                      {totalSummary.currentMonthNum}월 환산
+                      실판매량
                     </span>
                   </div>
                   <h3 className="text-2xl font-black text-purple-300 mt-2">
-                    {formatRawWon(Math.round(totalSummary.currentMonthEstimatedSales))}
+                    {totalSummary.quantity.toLocaleString()}개
                   </h3>
                 </div>
-                <div className="mt-3 pt-2 border-t border-white/5 text-[10px] text-purple-300/80 font-medium cursor-help" title={`공식: (${formatRawWon(totalSummary.currentMonthSalesSum)} / ${totalSummary.currentMonthDays}일) * ${totalSummary.currentMonthTotalDays}일`}>
-                  (조회기준 매출 ÷ {totalSummary.currentMonthDays}일 × {totalSummary.currentMonthTotalDays}일)
+                <div className="mt-3 pt-2 border-t border-white/5 text-[10px] text-purple-300/80 font-medium">
+                  {totalSummary.dayCount > 0 ? `일평균 ${Math.round(totalSummary.quantity / totalSummary.dayCount).toLocaleString()}개 판매` : "-"}
                 </div>
               </div>
 
-              {/* 4. 역대 최고 매출금액 */}
+              {/* 4. 기간 내 최고 매출일 */}
               <div className="glass-card p-5 rounded-2xl border-l-4 border-l-emerald-500 flex flex-col justify-between">
                 <div>
                   <div className="flex items-center justify-between text-slate-400 text-xs font-semibold">
-                    <span>역대 최고 매출금액</span>
+                    <span>기간 내 최고 매출일</span>
                     <Award className="w-4 h-4 text-emerald-400" />
                   </div>
                   <h3 className="text-2xl font-black text-emerald-400 mt-2">
@@ -2101,10 +2101,10 @@ export default function App() {
                 <div>
                   <h3 className="text-base font-bold text-white flex items-center gap-2">
                     <Award className="w-5 h-5 text-yellow-400" />
-                    상품 ABC 분석 & 메뉴별 매출 추이
+                    상품 ABC 분석 (선택 기간 실매출액 기준) & 메뉴별 매출 추이
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    왼쪽 표에서 메뉴를 클릭하면, 오른쪽에 해당 메뉴의 지금까지의 매출 및 판매량 추이 그래프가 나타납니다.
+                    선택한 기간의 메뉴별 실매출액(Net Sales) 기준으로 ABC 등급이 자동 산정됩니다. (원가 미반영 매출 기준 ABC 분석)
                   </p>
                 </div>
               </div>
@@ -2588,7 +2588,51 @@ export default function App() {
         )}
 
         {/* ----------------------------------------------------
-            TAB 3: EXCEL BULK UPLOAD TAB
+            STAGE 2: OPERATIONS COMPARATIVE ANALYSIS VIEW
+            ---------------------------------------------------- */}
+        {globalTab === "operations" && (
+          <OperationsAnalysisView 
+            salesRecords={displayedSalesRecords} 
+            selectedStoreId={selectedStoreId} 
+            onSelectStore={setSelectedStoreId} 
+          />
+        )}
+
+        {/* ----------------------------------------------------
+            STAGE 1: DATA QUALITY & 3-WAY RECONCILIATION VIEW
+            ---------------------------------------------------- */}
+        {globalTab === "data_quality" && (
+          <DataQualityView 
+            salesRecords={displayedSalesRecords} 
+            uploadLogs={uploadLogs} 
+            selectedStoreId={selectedStoreId} 
+            onSelectStore={setSelectedStoreId} 
+            onOpenPreUploadModal={() => setIsPreUploadModalOpen(true)}
+          />
+        )}
+
+        {/* ----------------------------------------------------
+            STAGE 3: DAILY AUTOMATED COLLECTION TOWER VIEW
+            ---------------------------------------------------- */}
+        {globalTab === "auto_collection" && (
+          <AutoCollectionView 
+            onTriggerManualSync={() => {}} 
+          />
+        )}
+
+        {/* ----------------------------------------------------
+            STAGE 4: SALES FORECASTING, PROFITABILITY & ALERTS
+            ---------------------------------------------------- */}
+        {globalTab === "forecasting" && (
+          <ForecastingProfitabilityView 
+            salesRecords={displayedSalesRecords} 
+            selectedStoreId={selectedStoreId} 
+            costData={costData} 
+          />
+        )}
+
+        {/* ----------------------------------------------------
+            TAB: EXCEL BULK UPLOAD TAB
             ---------------------------------------------------- */}
         {globalTab === "upload" && (
           <div className="space-y-6">
@@ -2804,6 +2848,95 @@ export default function App() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ----------------------------------------------------
+          STAGE AUDIT & VERIFICATION REPORT MODAL
+          ---------------------------------------------------- */}
+      <StageAuditModal 
+        isOpen={isAuditModalOpen} 
+        onClose={() => setIsAuditModalOpen(false)} 
+      />
+
+      {/* ----------------------------------------------------
+          COMMON MENU MAPPING DICTIONARY MODAL
+          ---------------------------------------------------- */}
+      <CommonMenuMappingModal 
+        isOpen={isMenuMappingModalOpen} 
+        onClose={() => setIsMenuMappingModalOpen(false)} 
+      />
+
+      {/* ----------------------------------------------------
+          PRE-UPLOAD INSPECTION & STAGING MODAL
+          ---------------------------------------------------- */}
+      {isPreUploadModalOpen && (
+        <PreUploadModal
+          isOpen={isPreUploadModalOpen}
+          onClose={() => setIsPreUploadModalOpen(false)}
+          parsedRows={stagedPreUpload?.parsedRows || []}
+          fileInfo={stagedPreUpload?.fileInfo || { name: "직접 업로드 파일" }}
+          existingSalesRecords={salesRecords}
+          onConfirmUpload={async ({ parsedRows, storeId, storeName, validation }) => {
+            if (!storeId) return;
+            const uploadId = `upload-${storeId}-${Date.now()}`;
+            
+            const newRecords = parsedRows.map(r => ({
+              ...r,
+              storeId,
+              storeName,
+              uploadId,
+              reportFileName: validation.fileName,
+              reportType: r.reportType || "daily_menu"
+            }));
+
+            // Idempotent upsert by storeId + date + itemCode
+            const salesMap = new Map();
+            salesRecords.forEach(r => {
+              const key = `${r.storeId}_${r.date}_${r.itemCode || r.itemName}`;
+              salesMap.set(key, r);
+            });
+
+            newRecords.forEach(r => {
+              const key = `${storeId}_${r.date}_${r.itemCode || r.itemName}`;
+              salesMap.set(key, r);
+            });
+
+            const finalSales = Array.from(salesMap.values());
+
+            const newLog = {
+              id: uploadId,
+              storeId,
+              storeName,
+              fileName: validation.fileName,
+              period: validation.actualPeriod,
+              rowCount: newRecords.length,
+              uploadTime: new Date().toISOString(),
+              status: "정상 완료"
+            };
+
+            const finalUploads = [
+              newLog,
+              ...uploadLogs.filter(l => !(l.storeId === storeId && l.period === validation.actualPeriod && l.fileName === validation.fileName))
+            ];
+
+            saveStateToLocal(stores, finalSales, finalUploads);
+
+            // Automatically switch dashboard view to that store and period
+            setSelectedStoreId(storeId);
+            if (validation.actualStartDate && validation.actualEndDate) {
+              setStartDate(validation.actualStartDate);
+              setEndDate(validation.actualEndDate);
+              setSelectedPeriod("custom");
+            }
+
+            setUploadStatusMsg({
+              type: "success",
+              text: `[${storeName}] ${validation.actualPeriod} 데이터(${newRecords.length}행, 실매출 ${formatRawWon(validation.totalNetSales)})가 데이터베이스에 성공적으로 반영되었습니다!`
+            });
+            setTimeout(() => setUploadStatusMsg({ type: "", text: "" }), 6000);
+            setIsPreUploadModalOpen(false);
+          }}
+        />
       )}
     </div>
   );

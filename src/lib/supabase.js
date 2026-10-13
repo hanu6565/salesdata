@@ -4,7 +4,32 @@ import { createClient } from "@supabase/supabase-js";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "https://zciylyymplgfvzqqgsck.supabase.co";
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InpjaXlseXltcGxnZnZ6cXFnc2NrIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTA0MTYwMDQsImV4cCI6MjEwNTk5MjAwNH0.i7UA4fepZPUwQdDHSk8b5mm3yytxOgVFCwa-gjJBKQ4";
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Client-side singleton Supabase client
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true
+  }
+});
+
+/**
+ * Check if Supabase client is properly configured with custom env vars
+ */
+export function isSupabaseConfigured() {
+  return !!(process.env.NEXT_PUBLIC_SUPABASE_URL && process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY);
+}
+
+/**
+ * Server-side Admin client for API routes (bypassing RLS when necessary)
+ */
+export function getSupabaseAdmin() {
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || supabaseAnonKey;
+  return createClient(supabaseUrl, serviceKey, {
+    auth: {
+      persistSession: false
+    }
+  });
+}
 
 /**
  * Load stores from Supabase
@@ -36,7 +61,8 @@ export async function saveStoresToSupabase(stores) {
     const formatted = stores.map(s => ({
       id: s.id,
       name: s.name,
-      category: s.category || "기타"
+      category: s.category || "기타",
+      updated_at: new Date().toISOString()
     }));
     const { error } = await supabase.from("stores").upsert(formatted, { onConflict: "id" });
     if (error) throw error;
@@ -46,18 +72,20 @@ export async function saveStoresToSupabase(stores) {
 }
 
 /**
- * Load sales records from Supabase
+ * Load sales records from Supabase with batch pagination support
  */
-export async function loadSalesFromSupabase() {
+export async function loadSalesFromSupabase(limit = 10000) {
   try {
     const { data, error } = await supabase
       .from("sales_records")
       .select("*")
-      .limit(10000);
+      .order("date", { ascending: false })
+      .limit(limit);
       
     if (error) throw error;
     if (data && data.length > 0) {
       return data.map(r => ({
+        id: r.id,
         date: r.date,
         storeId: r.store_id || r.storeId,
         storeName: r.store_name || r.storeName,
@@ -80,30 +108,75 @@ export async function loadSalesFromSupabase() {
 }
 
 /**
- * Save sales records in chunks to Supabase
+ * Filtered range query to minimize payload over network
+ */
+export async function loadSalesByStoreAndRange(storeId, startDate, endDate) {
+  try {
+    let query = supabase.from("sales_records").select("*");
+    if (storeId && storeId !== "total") {
+      query = query.eq("store_id", storeId);
+    }
+    if (startDate) {
+      query = query.gte("date", startDate);
+    }
+    if (endDate) {
+      query = query.lte("date", endDate);
+    }
+    const { data, error } = await query.order("date", { ascending: false });
+    if (error) throw error;
+    return (data || []).map(r => ({
+      id: r.id,
+      date: r.date,
+      storeId: r.store_id,
+      storeName: r.store_name,
+      category: r.category,
+      itemCode: r.item_code,
+      itemName: r.item_name,
+      quantity: Number(r.quantity) || 0,
+      totalSales: Number(r.total_sales) || 0,
+      discount: Number(r.discount) || 0,
+      netSales: Number(r.net_sales) || 0,
+      timeSlot: r.time_slot || "dinner",
+      uploadId: r.upload_id
+    }));
+  } catch (err) {
+    console.warn("Supabase filtered sales load error:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Save sales records in chunks to Supabase with IDEMPOTENT NATURAL KEYS
+ * (Prevents duplicate entries upon re-upload or re-sync)
  */
 export async function saveSalesToSupabase(sales) {
   try {
     if (!sales || sales.length === 0) return;
     
-    // Chunking to 500 rows per batch
-    const chunkSize = 500;
+    // Chunking to 400 rows per batch for reliable payload delivery
+    const chunkSize = 400;
     for (let i = 0; i < sales.length; i += chunkSize) {
-      const chunk = sales.slice(i, i + chunkSize).map((r, idx) => ({
-        id: `${r.storeId}-${r.date}-${r.itemName || idx}-${i + idx}`,
-        date: r.date,
-        store_id: r.storeId,
-        store_name: r.storeName,
-        category: r.category || "기타",
-        item_code: r.itemCode || "N/A",
-        item_name: r.itemName,
-        quantity: r.quantity || 0,
-        total_sales: r.totalSales || 0,
-        discount: r.discount || 0,
-        net_sales: r.netSales || 0,
-        time_slot: r.timeSlot || "dinner",
-        upload_id: r.uploadId || null
-      }));
+      const chunk = sales.slice(i, i + chunkSize).map((r, idx) => {
+        // Natural deterministic key to guarantee idempotency
+        const sanitizedItem = (r.itemName || `item_${idx}`).replace(/[^a-zA-Z0-9가-힣]/g, "_");
+        const deterministicId = r.id || `${r.storeId}_${r.date}_${sanitizedItem}_${r.timeSlot || 'all'}`;
+
+        return {
+          id: deterministicId,
+          date: r.date,
+          store_id: r.storeId,
+          store_name: r.storeName,
+          category: r.category || "기타",
+          item_code: r.itemCode || "N/A",
+          item_name: r.itemName,
+          quantity: Number(r.quantity) || 0,
+          total_sales: Number(r.totalSales) || 0,
+          discount: Number(r.discount) || 0,
+          net_sales: Number(r.netSales) || 0,
+          time_slot: r.timeSlot || "dinner",
+          upload_id: r.uploadId || null
+        };
+      });
 
       const { error } = await supabase.from("sales_records").upsert(chunk, { onConflict: "id" });
       if (error) {
@@ -200,5 +273,74 @@ export async function saveCostDataToSupabase(costData) {
     if (error) throw error;
   } catch (err) {
     console.warn("Supabase cost data save error:", err.message);
+  }
+}
+
+/**
+ * Load Common Menu Mappings from Supabase
+ */
+export async function loadMenuMappingsFromSupabase() {
+  try {
+    const { data, error } = await supabase.from("common_menu_mappings").select("*").order("standard_name");
+    if (error) throw error;
+    if (data && data.length > 0) {
+      return data.map(m => ({
+        commonId: m.common_id,
+        standardName: m.standard_name,
+        category: m.category,
+        costPrice: Number(m.cost_price) || 0,
+        targetSellingPrice: Number(m.target_selling_price) || 0,
+        aliases: m.aliases || []
+      }));
+    }
+    return null;
+  } catch (err) {
+    console.warn("Supabase menu mappings load fallback:", err.message);
+    return null;
+  }
+}
+
+/**
+ * Save Common Menu Mappings to Supabase
+ */
+export async function saveMenuMappingsToSupabase(mappings) {
+  try {
+    if (!mappings || mappings.length === 0) return;
+    const formatted = mappings.map(m => ({
+      common_id: m.commonId,
+      standard_name: m.standardName,
+      category: m.category || "기타",
+      cost_price: m.costPrice || 0,
+      target_selling_price: m.targetSellingPrice || 0,
+      aliases: m.aliases || [],
+      updated_at: new Date().toISOString()
+    }));
+    const { error } = await supabase.from("common_menu_mappings").upsert(formatted, { onConflict: "common_id" });
+    if (error) throw error;
+  } catch (err) {
+    console.warn("Supabase menu mappings save error:", err.message);
+  }
+}
+
+/**
+ * Save Auto-Collection Run Record to Supabase
+ */
+export async function saveCollectionHistoryToSupabase(batchResult) {
+  try {
+    if (!batchResult) return;
+    const row = {
+      batch_id: batchResult.batchId,
+      mode: batchResult.mode,
+      executed_at: batchResult.executedAt || new Date().toISOString(),
+      duration_ms: batchResult.durationMs || 0,
+      stores_processed_count: batchResult.storesProcessedCount || 0,
+      success_count: batchResult.successCount || 0,
+      pending_count: batchResult.pendingCredentialsCount || 0,
+      store_results: batchResult.storeResults || []
+    };
+    const { error } = await supabase.from("collection_history").upsert(row, { onConflict: "batch_id" });
+    if (error) throw error;
+  } catch (err) {
+    console.warn("Supabase collection history save error:", err.message);
   }
 }

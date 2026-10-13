@@ -1,120 +1,119 @@
 // excelParser.js
 import * as XLSX from "xlsx";
+import { matchStoreFromFileName, STORES_MASTER } from "../lib/storesConfig.js";
 
 /**
- * Extracts store name and period (YYYY-MM) from a filename.
- * E.g., "금막창 종로점 26년 7월 일자별 매출.xlsx" -> { storeName: "금막창 종로점", period: "2026-07" }
+ * Extracts store name and period (YYYY-MM or YYYY-MM-DD ~ YYYY-MM-DD) from a filename.
+ * E.g., "신영웅성서_2026-10-01_2026-10-11_메뉴매출.xls" -> 
+ *   { storeId: "store-4", storeName: "신영웅청국장해물뚝배기 성서점", period: "2026-10-01 ~ 2026-10-11", matchReason: "매장 별칭(신영웅성서) 일치", isAmbiguous: false }
  */
-export function parseFileNameInfo(fileName, existingStores = []) {
+export function parseFileNameInfo(fileName, existingStores = STORES_MASTER) {
   const nameWithoutExt = fileName.substring(0, fileName.lastIndexOf(".")) || fileName;
 
-  // 1. Detect Year and Month from filename
-  let year = null;
-  let month = null;
-  
-  const dateRegexes = [
-    /(\d{2,4})\s*년\s*(\d{1,2})\s*월/,       // E.g. "24년 11월", "2024년 11월"
-    /(\d{2,4})[-_](\d{1,2})/,               // E.g. "24-11", "2024_11"
-    /(\d{2,4})\s*\.\s*(\d{1,2})/,           // E.g. "24.11", "2024. 11"
-    /(\d{2,4})\s+(\d{1,2})/                 // E.g. "24 11", "2024 11"
-  ];
+  // 1. Detect Date Range or Year-Month from filename
+  let period = null;
+  let startDate = null;
+  let endDate = null;
 
-  let dateMatch = null;
-  for (const regex of dateRegexes) {
-    const match = nameWithoutExt.match(regex);
-    if (match) {
-      const mVal = parseInt(match[2], 10);
-      if (mVal >= 1 && mVal <= 12) {
-        dateMatch = match;
-        break;
-      }
+  // Pattern A: Range like 2026-10-01_2026-10-11 or 2026.10.01~2026.10.11
+  const rangeMatch = nameWithoutExt.match(/(\d{4}[-_.]\d{1,2}[-_.]\d{1,2})\s*[-~_]\s*(\d{4}[-_.]\d{1,2}[-_.]\d{1,2})/);
+  if (rangeMatch) {
+    startDate = parseDateString(rangeMatch[1]);
+    endDate = parseDateString(rangeMatch[2]);
+    if (startDate && endDate) {
+      period = `${startDate} ~ ${endDate}`;
     }
   }
 
-  if (dateMatch) {
-    let rawYear = dateMatch[1];
-    let rawMonth = dateMatch[2];
-    
-    if (rawYear.length === 2) {
-      year = "20" + rawYear;
-    } else {
-      year = rawYear;
-    }
-    month = rawMonth.padStart(2, "0");
-  } else {
-    const now = new Date();
-    year = now.getFullYear().toString();
-    month = (now.getMonth() + 1).toString().padStart(2, "0");
-  }
-
-  const period = `${year}-${month}`;
-
-  // 2. Detect Store Name
-  let detectedStoreName = "";
-  const sortedStoreNames = [...existingStores]
-    .map(s => s.name)
-    .sort((a, b) => b.length - a.length);
-
-  for (const storeName of sortedStoreNames) {
-    if (nameWithoutExt.includes(storeName)) {
-      detectedStoreName = storeName;
-      break;
-    }
-  }
-
-  if (!detectedStoreName) {
-    let guessed = nameWithoutExt;
-    if (dateMatch) {
-      guessed = guessed.replace(dateMatch[0], "");
-    }
-    
-    const keywords = [
-      "일기간", "시간대별", "시간대", "ABC분석", "상품ABC분석", "ABC", 
-      "일자별", "매출", "상품별", "상세", "현황", "데이터", "엑셀", 
-      "정산", "OKPOS", "okpos", "소계", "월별", "다운로드", "copy", "복사본", 
-      "\\(\\d+\\)", "결제", "일별", "보고서"
+  // Pattern B: Month level like 2026-10, 26년 10월, 2026.10
+  if (!period) {
+    const dateRegexes = [
+      /(\d{2,4})\s*년\s*(\d{1,2})\s*월/,       // E.g. "24년 11월", "2024년 11월"
+      /(\d{4})[-_](\d{1,2})(?:[-_](\d{1,2}))?/, // E.g. "2026-10" or "2026-10-01"
+      /(\d{2,4})\s*\.\s*(\d{1,2})/,           // E.g. "24.11", "2024. 11"
+      /(\d{2,4})\s+(\d{1,2})/                 // E.g. "24 11", "2024 11"
     ];
-    
-    keywords.forEach(keyword => {
-      guessed = guessed.replace(new RegExp(keyword, "gi"), "");
-    });
 
-    guessed = guessed.replace(/\d+\s*월\s*[-~]\s*\d+\s*월/g, "");
-    guessed = guessed.replace(/\d+\s*[-~]\s*\d+\s*월/g, "");
-    guessed = guessed.replace(/\d+\s*[-~]\s*\d+/g, "");
-    guessed = guessed.replace(/[-_()]/g, " ").replace(/\s+/g, " ").trim();
-    
-    if (guessed.length >= 2) {
-      const candidates = existingStores.filter(store => 
-        store.name.includes(guessed) || guessed.includes(store.name)
-      );
-
-      if (candidates.length === 1) {
-        detectedStoreName = candidates[0].name;
-      } else if (candidates.length > 1) {
-        const branchMatch = candidates.find(c => {
-          const branchPart = c.name.replace(guessed, "").trim();
-          const cleanBranch = branchPart.replace("점", "").trim();
-          return cleanBranch && nameWithoutExt.includes(cleanBranch);
-        });
-
-        if (branchMatch) {
-          detectedStoreName = branchMatch.name;
-        } else {
-          detectedStoreName = candidates[0].name;
+    let dateMatch = null;
+    for (const regex of dateRegexes) {
+      const match = nameWithoutExt.match(regex);
+      if (match) {
+        const mVal = parseInt(match[2], 10);
+        if (mVal >= 1 && mVal <= 12) {
+          dateMatch = match;
+          break;
         }
       }
     }
 
-    if (!detectedStoreName) {
-      detectedStoreName = guessed || "신규 매장";
+    if (dateMatch) {
+      let rawYear = dateMatch[1];
+      let rawMonth = dateMatch[2];
+      
+      let year = rawYear.length === 2 ? "20" + rawYear : rawYear;
+      let month = rawMonth.padStart(2, "0");
+      period = `${year}-${month}`;
+    } else {
+      const now = new Date();
+      period = `${now.getFullYear()}-${(now.getMonth() + 1).toString().padStart(2, "0")}`;
     }
   }
 
-  return { storeName: detectedStoreName, period };
+  // 2. High-precision Store Matching
+  const matchResult = matchStoreFromFileName(fileName, existingStores);
+  const matchedStore = matchResult.store;
+
+  let storeId = matchedStore ? matchedStore.id : null;
+  let storeName = matchedStore ? matchedStore.name : "미지정 (선택 필요)";
+  let matchReason = matchResult.matchReason;
+  let isAmbiguous = !matchedStore;
+
+  return {
+    storeId,
+    storeName,
+    period,
+    startDate,
+    endDate,
+    matchReason,
+    isAmbiguous
+  };
 }
 
-// Utility to parse dates in different formats
+/**
+ * Robust date parser supporting Excel numeric serials, formatted strings, and JS Dates.
+ * Avoids UTC timezone conversion shifts.
+ */
+export function parseDateCell(val, cellFormatted) {
+  if (cellFormatted && typeof cellFormatted === "string") {
+    const s = cellFormatted.trim();
+    const parsed = parseDateString(s);
+    if (parsed) return parsed;
+  }
+
+  if (typeof val === "number" && val > 30000 && val < 60000) {
+    try {
+      const dc = XLSX.SSF.parse_date_code(val);
+      if (dc && dc.y) {
+        return `${dc.y}-${String(dc.m).padStart(2, "0")}-${String(dc.d).padStart(2, "0")}`;
+      }
+    } catch (e) {}
+  }
+
+  if (val instanceof Date) {
+    try {
+      const y = val.getFullYear();
+      const m = String(val.getMonth() + 1).padStart(2, "0");
+      const d = String(val.getDate()).padStart(2, "0");
+      return `${y}-${m}-${d}`;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  return parseDateString(val);
+}
+
+// Utility to parse dates in different text formats
 export function parseDateString(val) {
   if (val instanceof Date) {
     try {
@@ -185,24 +184,45 @@ export function parseNumeric(val) {
  * 3. Horizontal Pivot 포맷
  * 4. Standard Flat List 포맷
  */
-export function parseOKPOSExcel(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-
-    reader.onload = (e) => {
-      try {
-        const data = e.target.result;
-        const workbook = XLSX.read(data, { type: "binary", cellDates: true });
-        
-        const sheetName = workbook.SheetNames[0];
-        const sheet = workbook.Sheets[sheetName];
-        
-        // 1. Read sheet as raw 2D array of cells
-        const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-        
-        if (allRows.length === 0) {
-          throw new Error("엑셀 파일에 데이터가 없거나 형식이 다릅니다.");
+async function readWorkbook(file) {
+  if (file && typeof file.arrayBuffer === "function") {
+    const ab = await file.arrayBuffer();
+    return XLSX.read(ab, { type: "array", cellDates: false });
+  }
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(file)) {
+    return XLSX.read(file, { type: "buffer", cellDates: false });
+  }
+  if (typeof file === "string") {
+    return XLSX.readFile(file, { cellDates: false });
+  }
+  if (typeof FileReader !== "undefined" && file instanceof Blob) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          resolve(XLSX.read(e.target.result, { type: "binary", cellDates: false }));
+        } catch (err) {
+          reject(err);
         }
+      };
+      reader.onerror = () => reject(new Error("파일을 읽는 중에 오류가 발생했습니다."));
+      reader.readAsBinaryString(file);
+    });
+  }
+  throw new Error("지원하지 않는 파일 형식이거나 파일 데이터가 없습니다.");
+}
+
+export async function parseOKPOSExcel(file) {
+  const workbook = await readWorkbook(file);
+  const sheetName = workbook.SheetNames[0];
+  const sheet = workbook.Sheets[sheetName];
+  
+  // 1. Read sheet as raw 2D array of cells
+  const allRows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  
+  if (allRows.length === 0) {
+    throw new Error("엑셀 파일에 데이터가 없거나 형식이 다릅니다.");
+  }
 
         // Check first 10 rows for keywords
         let allTextInHeader = "";
@@ -366,8 +386,7 @@ export function parseOKPOSExcel(file) {
               totalSales: totalSales || (morningSales + lunchSales + dinnerSales),
               totalCount: totalCount || (morningCount + lunchCount + dinnerCount)
             };
-            resolve(parsedRows);
-            return;
+            return parsedRows;
           }
         }
 
@@ -465,8 +484,7 @@ export function parseOKPOSExcel(file) {
               itemCount: parsedRows.length,
               totalSales: parsedRows.reduce((sum, r) => sum + r.netSales, 0)
             };
-            resolve(parsedRows);
-            return;
+            return parsedRows;
           }
         }
 
@@ -569,110 +587,155 @@ export function parseOKPOSExcel(file) {
           }
 
         } else {
-          // Standard flat list format
+          // Standard flat list / Daily Menu Sales format
           let headerRowIndex = -1;
+          const colIdxMap = {
+            date: -1,
+            category: -1,
+            code: -1,
+            name: -1,
+            qty: -1,
+            gross: -1,
+            disc: -1,
+            net: -1
+          };
+
           for (let r = 0; r < Math.min(allRows.length, 40); r++) {
             const rowCells = allRows[r].map(c => String(c || "").trim().replace(/\s+/g, ""));
             
-            const hasDate = rowCells.some(c => c.includes("일자") || c === "일" || c.includes("매출일"));
-            const hasName = rowCells.some(c => c.includes("상품명") || c.includes("메뉴명") || c.includes("품명"));
-            const hasCode = rowCells.some(c => c.includes("상품코드") || c.includes("코드") || c.includes("바코드"));
-            const hasSales = rowCells.some(c => c.includes("실매출") || c.includes("매출액") || c.includes("금액"));
+            // Priority 1: Exact matches for header names
+            const dateIdx = rowCells.findIndex(c => c === "일자" || c === "매출일자" || c === "영업일자" || c === "일시" || c === "일");
+            const nameIdx = rowCells.findIndex(c => c === "상품명" || c === "메뉴명" || c === "품명" || c === "단축명");
+            const netIdx = rowCells.findIndex(c => c === "실매출액" || c === "실매출" || c === "순매출액" || c === "순매출" || c === "NET매출액");
 
-            if (hasDate && hasName && (hasCode || hasSales)) {
+            if (dateIdx !== -1 && nameIdx !== -1) {
               headerRowIndex = r;
+              colIdxMap.date = dateIdx;
+              colIdxMap.name = nameIdx;
+              colIdxMap.net = netIdx !== -1 ? netIdx : rowCells.findIndex(c => c.includes("실매출") || c.includes("순매출"));
+              colIdxMap.category = rowCells.findIndex(c => c === "대분류" || c === "분류" || c === "카테고리" || c === "중분류");
+              colIdxMap.code = rowCells.findIndex(c => c === "상품코드" || c === "코드" || c === "단축코드" || c === "메뉴코드" || c === "바코드");
+              colIdxMap.qty = rowCells.findIndex(c => c === "수량" || c === "판매수량" || c === "총수량");
+              colIdxMap.gross = rowCells.findIndex(c => c === "총매출액" || c === "총매출" || c === "매출총액");
+              colIdxMap.disc = rowCells.findIndex(c => c === "총할인액" || c === "총할인" || c === "할인액" || c === "할인");
               break;
             }
           }
 
-          const rangeIndex = headerRowIndex !== -1 ? headerRowIndex : 4;
-          const rawJson = XLSX.utils.sheet_to_json(sheet, { range: rangeIndex, defval: "" });
-          
-          if (rawJson.length === 0) {
-            throw new Error("엑셀 파일에 데이터가 없거나 형식이 다릅니다.");
+          if (headerRowIndex === -1) {
+            headerRowIndex = 4;
+            colIdxMap.date = 0;
+            colIdxMap.category = 1;
+            colIdxMap.code = 2;
+            colIdxMap.name = 3;
+            colIdxMap.qty = 4;
+            colIdxMap.gross = 5;
+            colIdxMap.disc = 6;
+            colIdxMap.net = 7;
           }
 
-          const getValueByKeyKeywords = (rowObj, keywords) => {
-            const keys = Object.keys(rowObj);
-            for (const key of keys) {
-              const cleanKey = String(key).trim().replace(/\s+/g, "");
-              for (const kw of keywords) {
-                if (cleanKey.includes(kw)) {
-                  return rowObj[key];
-                }
-              }
-            }
-            return undefined;
-          };
-
+          const range = XLSX.utils.decode_range(sheet["!ref"] || `A1:Z${allRows.length}`);
           let lastValidDate = null;
+          let fileSummary = null;
 
-          for (let i = 0; i < rawJson.length; i++) {
-            const row = rawJson[i];
-            
-            const rawDate = getValueByKeyKeywords(row, ["일자", "일시", "매출일"]);
-            const category = String(getValueByKeyKeywords(row, ["대분류", "분류", "카테고리"]) || "기타").trim();
-            const itemCode = String(getValueByKeyKeywords(row, ["상품코드", "단축코드", "코드"]) || "").trim();
-            const itemName = String(getValueByKeyKeywords(row, ["상품명", "메뉴명", "품명"]) || "").trim();
-            
-            let dateStr = String(rawDate || "").trim();
+          for (let r = headerRowIndex + 1; r <= range.e.r; r++) {
+            const getCell = (c) => (c !== -1 ? sheet[XLSX.utils.encode_cell({ r, c })] : null);
+            const dateCell = getCell(colIdxMap.date);
+            const nameCell = getCell(colIdxMap.name);
+            const codeCell = getCell(colIdxMap.code);
+            const catCell = getCell(colIdxMap.category);
+            const qtyCell = getCell(colIdxMap.qty);
+            const grossCell = getCell(colIdxMap.gross);
+            const discCell = getCell(colIdxMap.disc);
+            const netCell = getCell(colIdxMap.net);
 
-            if (!dateStr && lastValidDate) {
-              dateStr = lastValidDate;
+            const rawDateStr = dateCell ? String(dateCell.w || dateCell.v || "").trim() : "";
+            const itemName = nameCell ? String(nameCell.w || nameCell.v || "").trim() : "";
+            // Preserve leading zeros: prefer formatted text 'w' over raw value 'v'
+            const rawCode = codeCell ? String(codeCell.w || codeCell.v || "").trim() : "";
+            const category = catCell ? String(catCell.w || catCell.v || "").trim() : "메뉴";
+
+            // Check if summary row (합계 / 총합계)
+            if (rawDateStr === "합계" || rawDateStr === "총합계" || itemName === "합계" || itemName === "총합계") {
+              fileSummary = {
+                quantity: parseNumeric(qtyCell?.v || qtyCell?.w),
+                totalSales: parseNumeric(grossCell?.v || grossCell?.w),
+                discount: parseNumeric(discCell?.v || discCell?.w),
+                netSales: parseNumeric(netCell?.v || netCell?.w)
+              };
+              continue; // Exclude summary row from detail rows to prevent double-counting
             }
 
-            if (!dateStr || dateStr.includes("합계") || dateStr.includes("소계") || !itemName) {
-              continue; 
+            // Exclude empty rows and subtotals (소계)
+            if ((!itemName && !rawDateStr) || rawDateStr.includes("소계") || itemName.includes("소계")) {
+              continue;
             }
 
-            let formattedDate = parseDateString(rawDate) || parseDateString(dateStr);
-            if (!formattedDate) {
-              formattedDate = dateStr;
+            // Parse date using parseDateCell
+            let date = parseDateCell(dateCell?.v, dateCell?.w);
+            // Inherit merged date if blank within same valid segment
+            if (!date && lastValidDate && itemName) {
+              date = lastValidDate;
+            }
+            if (date) {
+              lastValidDate = date;
             }
 
-            if (formattedDate && !formattedDate.includes("합계") && !formattedDate.includes("소계")) {
-              lastValidDate = formattedDate;
+            if (!date || !itemName) continue;
+
+            const quantity = Math.round(parseNumeric(qtyCell?.v || qtyCell?.w));
+            const totalSales = parseNumeric(grossCell?.v || grossCell?.w);
+            const discount = parseNumeric(discCell?.v || discCell?.w);
+            let netSales = parseNumeric(netCell?.v || netCell?.w);
+
+            // Cross-check & validate netSales formula: totalSales - discount
+            if (netSales === 0 && totalSales > 0 && discount === 0) {
+              netSales = totalSales;
+            }
+            if (totalSales > 0 && discount > 0 && netSales === totalSales) {
+              netSales = totalSales - discount;
             }
 
-            const quantityVal = getValueByKeyKeywords(row, ["수량", "판매수량"]) || 0;
-            const totalSalesVal = getValueByKeyKeywords(row, ["총매출액", "총매출", "매출총액"]) || 0;
-            const discountVal = getValueByKeyKeywords(row, ["총할인액", "할인액", "할인"]) || 0;
-            const netSalesVal = getValueByKeyKeywords(row, ["실매출액", "실매출", "매출액"]) || 0;
-
-            const quantity = Math.round(parseNumeric(quantityVal));
-            const totalSales = parseNumeric(totalSalesVal);
-            const discount = parseNumeric(discountVal);
-            const netSales = parseNumeric(netSalesVal);
+            // Tag 0-won option / service items while keeping them preserved in original form
+            const isOptionOrService = (netSales === 0 && totalSales === 0 && quantity > 0);
 
             parsedRows.push({
-              date: formattedDate,
-              category,
-              itemCode: itemCode || "N/A",
+              date,
+              category: category || "메뉴",
+              itemCode: rawCode || `ITEM-${r}`,
               itemName,
               quantity,
               totalSales,
               discount,
               netSales,
+              isOptionOrService,
+              reportType: "daily_menu"
             });
           }
+
+          if (fileSummary) {
+            parsedRows.fileSummary = fileSummary;
+          }
+
+          const datesSet = new Set(parsedRows.map(r => r.date).filter(Boolean));
+          const sortedDates = Array.from(datesSet).sort();
+          parsedRows.reportType = "일자별 상품별 매출 (메뉴매출)";
+          parsedRows.actualPeriod = {
+            start: sortedDates[0] || null,
+            end: sortedDates[sortedDates.length - 1] || null
+          };
+          parsedRows.distinctDays = sortedDates;
+          parsedRows.totalNetSales = parsedRows.reduce((sum, r) => sum + r.netSales, 0);
+          parsedRows.totalGrossSales = parsedRows.reduce((sum, r) => sum + r.totalSales, 0);
+          parsedRows.totalDiscount = parsedRows.reduce((sum, r) => sum + r.discount, 0);
+          parsedRows.totalQuantity = parsedRows.reduce((sum, r) => sum + r.quantity, 0);
         }
 
-        if (parsedRows.length === 0) {
-          throw new Error("OKPOS 형식의 매출 행을 찾을 수 없습니다. 엑셀 파일 형식을 확인해 주세요.");
-        }
+    if (parsedRows.length === 0) {
+      throw new Error("OKPOS 형식의 매출 행을 찾을 수 없습니다. 엑셀 파일 형식을 확인해 주세요.");
+    }
 
-        resolve(parsedRows);
-      } catch (err) {
-        reject(err);
-      }
-    };
-
-    reader.onerror = () => {
-      reject(new Error("파일을 읽는 중에 오류가 발생했습니다."));
-    };
-
-    reader.readAsBinaryString(file);
-  });
+    return parsedRows;
 }
 
 /**
