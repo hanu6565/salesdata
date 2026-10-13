@@ -23,8 +23,8 @@ const DEFAULT_WEEKDAY_FACTORS = {
 export function computeMonthlyForecast(salesRecords, options = {}) {
   const {
     storeId = "total",
-    targetMonth = "2026-08",
-    cutoffDate = "2026-08-26" // 현재 기준일
+    targetMonth = "2026-10",
+    cutoffDate = "2026-10-12" // 현재 기준일
   } = options;
 
   const [yearStr, monthStr] = targetMonth.split("-");

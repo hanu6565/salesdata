@@ -600,24 +600,41 @@ export async function parseOKPOSExcel(file) {
             net: -1
           };
 
+          let isDailySummary = false;
           for (let r = 0; r < Math.min(allRows.length, 40); r++) {
             const rowCells = allRows[r].map(c => String(c || "").trim().replace(/\s+/g, ""));
             
-            // Priority 1: Exact matches for header names
-            const dateIdx = rowCells.findIndex(c => c === "일자" || c === "매출일자" || c === "영업일자" || c === "일시" || c === "일");
-            const nameIdx = rowCells.findIndex(c => c === "상품명" || c === "메뉴명" || c === "품명" || c === "단축명");
-            const netIdx = rowCells.findIndex(c => c === "실매출액" || c === "실매출" || c === "순매출액" || c === "순매출" || c === "NET매출액");
+            // Flexible match for date
+            const dateIdx = rowCells.findIndex(c => 
+              c === "일자" || c === "매출일자" || c === "영업일자" || c === "정산일자" || c === "판매일자" || c === "일시" || c === "일" ||
+              c.includes("영업일자") || c.includes("매출일자")
+            );
+            // Flexible match for name
+            const nameIdx = rowCells.findIndex(c => 
+              c === "상품명" || c === "메뉴명" || c === "품명" || c === "품목명" || c === "단축명" ||
+              c.includes("상품명") || c.includes("메뉴명") || c.includes("품명")
+            );
+            // Flexible match for net sales
+            const netIdx = rowCells.findIndex(c => 
+              c === "실매출액" || c === "실매출" || c === "순매출액" || c === "순매출" || c === "NET매출액" || c === "결제금액" ||
+              c.includes("실매출") || c.includes("순매출")
+            );
+            const grossIdx = rowCells.findIndex(c =>
+              c === "총매출액" || c === "총매출" || c === "매출총액" || c === "금액" || c === "판매금액" || c === "매출금액" ||
+              c.includes("총매출")
+            );
 
-            if (dateIdx !== -1 && nameIdx !== -1) {
+            if (dateIdx !== -1 && (nameIdx !== -1 || netIdx !== -1 || grossIdx !== -1)) {
               headerRowIndex = r;
               colIdxMap.date = dateIdx;
               colIdxMap.name = nameIdx;
-              colIdxMap.net = netIdx !== -1 ? netIdx : rowCells.findIndex(c => c.includes("실매출") || c.includes("순매출"));
-              colIdxMap.category = rowCells.findIndex(c => c === "대분류" || c === "분류" || c === "카테고리" || c === "중분류");
+              isDailySummary = (nameIdx === -1);
+              colIdxMap.net = netIdx !== -1 ? netIdx : grossIdx;
+              colIdxMap.category = rowCells.findIndex(c => c === "대분류" || c === "분류" || c === "카테고리" || c === "중분류" || c === "코너");
               colIdxMap.code = rowCells.findIndex(c => c === "상품코드" || c === "코드" || c === "단축코드" || c === "메뉴코드" || c === "바코드");
-              colIdxMap.qty = rowCells.findIndex(c => c === "수량" || c === "판매수량" || c === "총수량");
-              colIdxMap.gross = rowCells.findIndex(c => c === "총매출액" || c === "총매출" || c === "매출총액");
-              colIdxMap.disc = rowCells.findIndex(c => c === "총할인액" || c === "총할인" || c === "할인액" || c === "할인");
+              colIdxMap.qty = rowCells.findIndex(c => c === "수량" || c === "판매수량" || c === "총수량" || c === "건수" || c === "영수건수");
+              colIdxMap.gross = grossIdx !== -1 ? grossIdx : netIdx;
+              colIdxMap.disc = rowCells.findIndex(c => c === "총할인액" || c === "총할인" || c === "할인액" || c === "할인" || c === "할인금액" || c === "DC");
               break;
             }
           }
@@ -650,10 +667,13 @@ export async function parseOKPOSExcel(file) {
             const netCell = getCell(colIdxMap.net);
 
             const rawDateStr = dateCell ? String(dateCell.w || dateCell.v || "").trim() : "";
-            const itemName = nameCell ? String(nameCell.w || nameCell.v || "").trim() : "";
+            let itemName = nameCell ? String(nameCell.w || nameCell.v || "").trim() : "";
+            if (isDailySummary && !itemName) {
+              itemName = "일별 종합 매출";
+            }
             // Preserve leading zeros: prefer formatted text 'w' over raw value 'v'
             const rawCode = codeCell ? String(codeCell.w || codeCell.v || "").trim() : "";
-            const category = catCell ? String(catCell.w || catCell.v || "").trim() : "메뉴";
+            const category = catCell ? String(catCell.w || catCell.v || "").trim() : (isDailySummary ? "일별종합" : "메뉴");
 
             // Check if summary row (합계 / 총합계)
             if (rawDateStr === "합계" || rawDateStr === "총합계" || itemName === "합계" || itemName === "총합계") {

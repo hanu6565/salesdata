@@ -45,23 +45,34 @@ export default function ForecastingProfitabilityView({
   const [salesDropThreshold, setSalesDropThreshold] = useState(20); // 20%
   const [activeSubTab, setActiveSubTab] = useState("forecast"); // "forecast" | "profit" | "alerts"
 
+  const latestDate = useMemo(() => {
+    let maxD = "";
+    (salesRecords || []).forEach(r => {
+      if (r.date && (!maxD || r.date > maxD)) maxD = r.date;
+    });
+    return maxD || "2026-10-12";
+  }, [salesRecords]);
+
+  const targetMonth = useMemo(() => latestDate.substring(0, 7), [latestDate]);
+  const monthNum = useMemo(() => parseInt(targetMonth.substring(5, 7), 10), [targetMonth]);
+
   // 1) 근거 기반 월 매출 예상 산출
   const forecastData = useMemo(() => {
     return computeMonthlyForecast(salesRecords, {
       storeId: selectedStoreId,
-      targetMonth: "2026-08",
-      cutoffDate: "2026-08-26"
+      targetMonth: targetMonth,
+      cutoffDate: latestDate
     });
-  }, [salesRecords, selectedStoreId]);
+  }, [salesRecords, selectedStoreId, targetMonth, latestDate]);
 
   // 2) 수익성 및 공헌이익 산출 (확보된 원가 범위 내)
   const profitData = useMemo(() => {
     return computeSecuredProfitability(salesRecords, {
       storeId: selectedStoreId,
-      period: "2026-08",
+      period: targetMonth,
       costData
     });
-  }, [salesRecords, selectedStoreId, costData]);
+  }, [salesRecords, selectedStoreId, targetMonth, costData]);
 
   // 3) 실시간 이상 징후 및 경보
   const alertList = useMemo(() => {
@@ -70,10 +81,10 @@ export default function ForecastingProfitabilityView({
         ...DEFAULT_ALERT_THRESHOLDS,
         salesDropRate: salesDropThreshold
       },
-      referenceDate: "2026-08-26",
+      referenceDate: latestDate,
       storeId: selectedStoreId
     });
-  }, [salesRecords, selectedStoreId, salesDropThreshold]);
+  }, [salesRecords, selectedStoreId, salesDropThreshold, latestDate]);
 
   return (
     <div className="space-y-6">
@@ -162,7 +173,7 @@ export default function ForecastingProfitabilityView({
             {/* 카드 3: 최종 월말 예상 및 95% 신뢰구간 */}
             <div className="glass-card p-5 rounded-xl border border-emerald-500/40 bg-emerald-950/20">
               <div className="text-xs text-emerald-300 font-semibold mb-1 flex items-center justify-between">
-                <span>최종 8월 매출 예상 (포캐스트)</span>
+                <span>최종 {monthNum}월 매출 예상 (포캐스트)</span>
                 <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-1.5 py-0.5 rounded border border-emerald-500/30">
                   95% 신뢰구간
                 </span>

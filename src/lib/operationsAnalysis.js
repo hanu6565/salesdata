@@ -16,8 +16,8 @@ function getDaysInMonth(year, month) {
 export function computeOperationsSummary(salesRecords, options = {}) {
   const {
     storeId = "total",
-    targetMonth = "2026-08", // 기준 월
-    currentDateCutoff = "2026-08-26", // 현재 시점 기준일 (월 중간 시점)
+    targetMonth = "2026-10", // 기준 월
+    currentDateCutoff = "2026-10-12", // 현재 시점 기준일
     monthlyTargetSales = null
   } = options;
 
@@ -164,7 +164,7 @@ export function computeOperationsSummary(salesRecords, options = {}) {
 /**
  * 2. 7개 매장 실적 비교 벤치마킹 테이블 (매출, 객단가, 건수, 할인율 랭킹)
  */
-export function computeStoreComparisonTable(salesRecords, cutoffDate = "2026-08-26") {
+export function computeStoreComparisonTable(salesRecords, cutoffDate = "2026-10-12") {
   const monthPrefix = cutoffDate.substring(0, 7);
   const cutoffDay = parseInt(cutoffDate.split("-")[2], 10);
 

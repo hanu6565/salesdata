@@ -292,27 +292,62 @@ export default function App() {
     setSelectedPeriod("custom");
   };
 
+  const latestDataDate = useMemo(() => {
+    let maxD = "";
+    salesRecords.forEach(r => {
+      if (r.date && (!maxD || r.date > maxD)) {
+        maxD = r.date;
+      }
+    });
+    return maxD || "2026-10-12";
+  }, [salesRecords]);
+
+  const currentMonthNum = useMemo(() => parseInt(latestDataDate.substring(5, 7), 10) || 10, [latestDataDate]);
+  const currentYearNum = useMemo(() => parseInt(latestDataDate.substring(0, 4), 10) || 2026, [latestDataDate]);
+  const prevMonthDate = useMemo(() => new Date(currentYearNum, currentMonthNum - 2, 1), [currentYearNum, currentMonthNum]);
+  const prevMonthNum = useMemo(() => prevMonthDate.getMonth() + 1, [prevMonthDate]);
+  const prevYearNum = useMemo(() => prevMonthDate.getFullYear(), [prevMonthDate]);
+
   const applyQuickPreset = (preset) => {
+    const latest = new Date(latestDataDate);
+    const formatDate = (d) => {
+      const y = d.getFullYear();
+      const m = String(d.getMonth() + 1).padStart(2, "0");
+      const day = String(d.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+
     if (preset === "7d") {
-      setStartDate("2026-08-20");
-      setEndDate("2026-08-26");
+      const start = new Date(latest);
+      start.setDate(start.getDate() - 6);
+      setStartDate(formatDate(start));
+      setEndDate(latestDataDate);
       setSelectedPeriod("custom");
     } else if (preset === "14d") {
-      setStartDate("2026-08-13");
-      setEndDate("2026-08-26");
+      const start = new Date(latest);
+      start.setDate(start.getDate() - 13);
+      setStartDate(formatDate(start));
+      setEndDate(latestDataDate);
       setSelectedPeriod("custom");
     } else if (preset === "30d") {
-      setStartDate("2026-07-28");
-      setEndDate("2026-08-26");
+      const start = new Date(latest);
+      start.setDate(start.getDate() - 29);
+      setStartDate(formatDate(start));
+      setEndDate(latestDataDate);
       setSelectedPeriod("custom");
     } else if (preset === "currentMonth") {
-      setStartDate("2026-08-01");
-      setEndDate("2026-08-26");
-      setSelectedPeriod("2026-08");
+      const yStr = String(currentYearNum);
+      const mStr = String(currentMonthNum).padStart(2, "0");
+      setStartDate(`${yStr}-${mStr}-01`);
+      setEndDate(latestDataDate);
+      setSelectedPeriod(`${yStr}-${mStr}`);
     } else if (preset === "prevMonth") {
-      setStartDate("2026-07-01");
-      setEndDate("2026-07-31");
-      setSelectedPeriod("2026-07");
+      const yStr = String(prevYearNum);
+      const mStr = String(prevMonthNum).padStart(2, "0");
+      const lastDay = new Date(prevYearNum, prevMonthNum, 0).getDate();
+      setStartDate(`${yStr}-${mStr}-01`);
+      setEndDate(`${yStr}-${mStr}-${String(lastDay).padStart(2, "0")}`);
+      setSelectedPeriod(`${yStr}-${mStr}`);
     } else if (preset === "all") {
       setStartDate("");
       setEndDate("");
@@ -669,7 +704,17 @@ export default function App() {
 
     const uploadId = `upload-${storeId}-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-    const newRecords = rows.map(row => ({
+    const seenRowKeys = new Set();
+    const deduplicatedRows = [];
+    rows.forEach(row => {
+      const key = `${storeId}_${row.date}_${row.itemName}_${row.timeSlot || 'all'}`;
+      if (!seenRowKeys.has(key)) {
+        seenRowKeys.add(key);
+        deduplicatedRows.push(row);
+      }
+    });
+
+    const newRecords = deduplicatedRows.map(row => ({
       ...row,
       storeId,
       storeName,
@@ -891,13 +936,14 @@ export default function App() {
 
   const filteredSalesData = useMemo(() => {
     return displayedSalesRecords.filter(r => {
+      // Store filter
       if (selectedStoreId !== "total" && r.storeId !== selectedStoreId) {
         return false;
       }
-      if (selectedPeriod !== "all") {
-        if (startDate && r.date < startDate) return false;
-        if (endDate && r.date > endDate) return false;
-      }
+      // Strict date range filter (ALWAYS active when startDate or endDate are specified)
+      if (startDate && r.date < startDate) return false;
+      if (endDate && r.date > endDate) return false;
+      // Category filter
       if (selectedCategory !== "all") {
         if (selectedCategory === "식사류/정식류") {
           return r.category === "식사류" || r.category === "정식류" || r.category === "찌개류";
@@ -912,10 +958,10 @@ export default function App() {
       }
       return true;
     });
-  }, [displayedSalesRecords, selectedStoreId, selectedPeriod, startDate, endDate, selectedCategory]);
+  }, [displayedSalesRecords, selectedStoreId, startDate, endDate, selectedCategory]);
 
   // ----------------------------------------------------
-  // TOTAL SUMMARY KPI METRICS (Including Formulas)
+  // TOTAL SUMMARY KPI METRICS (Including Formulas & Benchmarks)
   // ----------------------------------------------------
   const totalSummary = useMemo(() => {
     let netSales = 0;
@@ -936,8 +982,18 @@ export default function App() {
       }
     });
 
-    const dayCount = uniqueDays.size || (filteredSalesData.length > 0 ? 1 : 0);
-    const dailyAvgSales = dayCount > 0 ? Math.round(netSales / dayCount) : 0;
+    const operatingDays = uniqueDays.size;
+    let calendarDays = operatingDays;
+    if (startDate && endDate) {
+      const d1 = new Date(startDate);
+      const d2 = new Date(endDate);
+      if (!isNaN(d1) && !isNaN(d2) && d2 >= d1) {
+        calendarDays = Math.round((d2 - d1) / 86400000) + 1;
+      }
+    }
+
+    const dayCount = operatingDays > 0 ? operatingDays : (filteredSalesData.length > 0 ? 1 : 0);
+    const dailyAvgSales = operatingDays > 0 ? Math.round(netSales / operatingDays) : 0;
 
     let peakDay = "-";
     let peakSales = 0;
@@ -948,27 +1004,91 @@ export default function App() {
       }
     });
 
+    // Target month calendar days (e.g. 31 days for October)
+    const refDateStr = endDate || startDate || "2026-10-12";
+    const refYear = parseInt(refDateStr.substring(0, 4), 10) || 2026;
+    const refMonth = parseInt(refDateStr.substring(5, 7), 10) || 10;
+    const monthTotalDays = new Date(refYear, refMonth, 0).getDate();
+
+    // Monthly estimation: minimum 3 days required to avoid wild projections
+    let currentMonthEstimatedSales = null;
+    let currentMonthEstimatedNote = "";
+    if (operatingDays >= 3) {
+      currentMonthEstimatedSales = Math.round(dailyAvgSales * monthTotalDays);
+      currentMonthEstimatedNote = `공식: (${refMonth}월 ${operatingDays}일 기준 일평균 ${Math.round(dailyAvgSales).toLocaleString()}원 × ${monthTotalDays}일)`;
+    } else {
+      currentMonthEstimatedNote = "자료 부족으로 계산 보류 (최소 3일 이상 필요)";
+    }
+
+    // Previous month same elapsed days comparison (e.g. Oct 1~12 vs Sep 1~12, or Oct 12 vs Sep 12)
+    let priorPeriodNetSales = 0;
+    let hasPriorData = false;
+    let momGrowthRate = null;
+    let momLabel = "비교 데이터 부족";
+
+    if (startDate && endDate && operatingDays > 0) {
+      const d1 = new Date(startDate);
+      const d2 = new Date(endDate);
+      const p1 = new Date(d1);
+      p1.setMonth(p1.getMonth() - 1);
+      const p2 = new Date(d2);
+      p2.setMonth(p2.getMonth() - 1);
+      const pStartStr = p1.toISOString().split("T")[0];
+      const pEndStr = p2.toISOString().split("T")[0];
+
+      const priorRecords = displayedSalesRecords.filter(r => {
+        if (selectedStoreId !== "total" && r.storeId !== selectedStoreId) return false;
+        return r.date >= pStartStr && r.date <= pEndStr;
+      });
+
+      if (priorRecords.length > 0) {
+        priorPeriodNetSales = priorRecords.reduce((sum, r) => sum + (r.netSales || 0), 0);
+        if (priorPeriodNetSales > 0) {
+          hasPriorData = true;
+          momGrowthRate = Math.round(((netSales - priorPeriodNetSales) / priorPeriodNetSales) * 1000) / 10;
+          momLabel = `${momGrowthRate >= 0 ? "+" : ""}${momGrowthRate}% (전월 동일 경과일 대비)`;
+        }
+      }
+    }
+
     return {
       netSales,
       totalGrossSales,
       discount,
       quantity,
+      operatingDays,
+      calendarDays,
       dayCount,
       dailyAvgSales,
       peakDay,
-      peakSales
+      peakSales,
+      currentMonthSalesSum: netSales,
+      currentMonthDays: operatingDays,
+      currentMonthTotalDays: monthTotalDays,
+      currentMonthEstimatedSales,
+      currentMonthEstimatedNote,
+      hasPriorData,
+      priorPeriodNetSales,
+      momGrowthRate,
+      momLabel,
+      currentMonthLabel: `${refYear}년 ${refMonth}월`
     };
-  }, [filteredSalesData]);
+  }, [filteredSalesData, displayedSalesRecords, selectedStoreId, startDate, endDate]);
 
   // ----------------------------------------------------
-  // TIME SLOT TREND DATA (아침+점심 vs 저녁 분리 추이)
+  // TIME SLOT TREND DATA (실제 POS 원본 데이터 기반)
   // ----------------------------------------------------
+  const hasActualTimeSlotData = useMemo(() => {
+    return filteredSalesData.some(r => 
+      (r.timeSlot === "morning" || r.timeSlot === "lunch" || r.timeSlot === "dinner") ||
+      (r.category && r.category.startsWith("시간대_"))
+    );
+  }, [filteredSalesData]);
+
   const timeSlotTrendChartData = useMemo(() => {
-    if (selectedStoreId === "total") return [];
+    if (selectedStoreId === "total" || !hasActualTimeSlotData) return [];
     
     const dailyMap = {};
-    const storeName = storeMap[selectedStoreId] || "";
-    const storeProfile = STORE_TIME_PROFILES[storeName] || { morningRatio: 0.02, lunchRatio: 0.35, dinnerRatio: 0.63, avgTicket: 40000 };
 
     filteredSalesData.forEach(r => {
       if (!r.date || r.storeId !== selectedStoreId) return;
@@ -991,6 +1111,7 @@ export default function App() {
       dayObj.totalSales += r.netSales || 0;
       dayObj.totalCount += r.quantity || 0;
 
+      // Only aggregate actual tagged time-slot records; NO arbitrary estimation ratios!
       if (r.timeSlot === "morning" || r.category === "시간대_아침") {
         dayObj.morningSales += r.netSales || 0;
         dayObj.morningCount += r.quantity || 0;
@@ -1000,24 +1121,6 @@ export default function App() {
       } else if (r.timeSlot === "dinner" || r.category === "시간대_저녁") {
         dayObj.dinnerSales += r.netSales || 0;
         dayObj.dinnerCount += r.quantity || 0;
-      } else {
-        if (r.category === "정식류" || r.category === "식사류" || r.category === "찌개류" || (r.itemName && r.itemName.includes("점심"))) {
-          dayObj.lunchSales += Math.round((r.netSales || 0) * 0.85);
-          dayObj.dinnerSales += Math.round((r.netSales || 0) * 0.15);
-          dayObj.lunchCount += Math.round((r.quantity || 0) * 0.85);
-          dayObj.dinnerCount += Math.round((r.quantity || 0) * 0.15);
-        } else if (r.category === "주류" || r.category === "막창류" || (r.itemName && (r.itemName.includes("소주") || r.itemName.includes("맥주") || r.itemName.includes("막창")))) {
-          dayObj.dinnerSales += Math.round((r.netSales || 0) * 0.90);
-          dayObj.lunchSales += Math.round((r.netSales || 0) * 0.10);
-          dayObj.dinnerCount += Math.round((r.quantity || 0) * 0.90);
-          dayObj.lunchCount += Math.round((r.quantity || 0) * 0.10);
-        } else {
-          dayObj.morningSales += Math.round((r.netSales || 0) * storeProfile.morningRatio);
-          dayObj.lunchSales += Math.round((r.netSales || 0) * storeProfile.lunchRatio);
-          dayObj.dinnerSales += Math.round((r.netSales || 0) * storeProfile.dinnerRatio);
-          dayObj.lunchCount += Math.round((r.quantity || 0) * (storeProfile.lunchRatio + storeProfile.morningRatio));
-          dayObj.dinnerCount += Math.round((r.quantity || 0) * storeProfile.dinnerRatio);
-        }
       }
     });
 
@@ -1025,16 +1128,16 @@ export default function App() {
     return sortedDates.map(d => {
       const item = dailyMap[d];
       const morningLunchSales = item.morningSales + item.lunchSales;
-      const morningLunchCount = Math.max(item.morningCount + item.lunchCount, 1);
+      const morningLunchCount = item.morningCount + item.lunchCount;
       const dinnerSales = item.dinnerSales;
-      const dinnerCount = Math.max(item.dinnerCount, 1);
+      const dinnerCount = item.dinnerCount;
       const totalSales = morningLunchSales + dinnerSales;
       const totalCount = morningLunchCount + dinnerCount;
 
-      const morningLunchAvg = Math.round(morningLunchSales / morningLunchCount);
-      const dinnerAvg = Math.round(dinnerSales / dinnerCount);
-      const morningLunchRatio = totalSales > 0 ? (morningLunchSales / totalSales) * 100 : 0;
-      const dinnerRatio = totalSales > 0 ? (dinnerSales / totalSales) * 100 : 0;
+      const morningLunchAvg = morningLunchCount > 0 ? Math.round(morningLunchSales / morningLunchCount) : 0;
+      const dinnerAvg = dinnerCount > 0 ? Math.round(dinnerSales / dinnerCount) : 0;
+      const morningLunchRatio = totalSales > 0 ? Math.round(((morningLunchSales / totalSales) * 100) * 10) / 10 : 0;
+      const dinnerRatio = totalSales > 0 ? Math.round(((dinnerSales / totalSales) * 100) * 10) / 10 : 0;
 
       return {
         date: d,
@@ -1052,16 +1155,17 @@ export default function App() {
         totalCount,
         morningLunchAvg,
         dinnerAvg,
-        morningLunchRatio: Math.round(morningLunchRatio * 10) / 10,
-        dinnerRatio: Math.round(dinnerRatio * 10) / 10
+        morningLunchRatio,
+        dinnerRatio
       };
     });
-  }, [filteredSalesData, selectedStoreId, storeMap]);
+  }, [filteredSalesData, selectedStoreId, hasActualTimeSlotData]);
 
   // Summary indicators for time slots
   const timeSlotSummary = useMemo(() => {
     if (timeSlotTrendChartData.length === 0) {
       return {
+        hasData: false,
         totalMorningLunch: 0,
         totalDinner: 0,
         totalSales: 0,
@@ -1071,9 +1175,9 @@ export default function App() {
         dinnerCount: 0,
         morningLunchAvg: 0,
         dinnerAvg: 0,
-        patternType: "데이터 없음",
-        patternColor: "text-slate-400",
-        strategyHint: "해당 기간의 매출 데이터가 없습니다."
+        patternType: "시간대 원본 자료 대기 중",
+        patternColor: "text-slate-400 bg-slate-500/10 border-slate-500/20",
+        strategyHint: "해당 매장의 시간대별 POS 원본 데이터가 존재하지 않아 시간대 분석을 보류합니다. (추정치 생성 배제 원칙)"
       };
     }
 
@@ -1090,8 +1194,8 @@ export default function App() {
     });
 
     const totalSales = totalML + totalD;
-    const mlRatio = totalSales > 0 ? (totalML / totalSales) * 100 : 0;
-    const dRatio = totalSales > 0 ? (totalD / totalSales) * 100 : 0;
+    const mlRatio = totalSales > 0 ? Math.round(((totalML / totalSales) * 100) * 10) / 10 : 0;
+    const dRatio = totalSales > 0 ? Math.round(((totalD / totalSales) * 100) * 10) / 10 : 0;
     const mlAvg = countML > 0 ? Math.round(totalML / countML) : 0;
     const dAvg = countD > 0 ? Math.round(totalD / countD) : 0;
 
@@ -1102,7 +1206,7 @@ export default function App() {
     if (mlRatio >= 65) {
       patternType = "점심 집중형 (런치 피크)";
       patternColor = "text-cyan-400 bg-cyan-500/10 border-cyan-500/20";
-      strategyHint = "점심 식사 비중이 매우 높습니다. 저녁 시간대 객단가를 높이기 위해 퇴근 직장인 타겟 '해피아워 주류/사이드 묶음 할인' 및 사전 예약 프로모션을 추천합니다.";
+      strategyHint = "점심 식사 비중이 매우 높습니다. 저녁 시간대 객단가를 높이기 위해 퇴근 직장인 타겟 '해피아워 주류/사이드 묶음 할인' 프로모션을 추천합니다.";
     } else if (dRatio >= 65) {
       patternType = "저녁 골든타임형 (디너/주류)";
       patternColor = "text-purple-400 bg-purple-500/10 border-purple-500/20";
@@ -1110,11 +1214,12 @@ export default function App() {
     }
 
     return {
+      hasData: true,
       totalMorningLunch: totalML,
       totalDinner: totalD,
       totalSales,
-      morningLunchRatio: Math.round(mlRatio * 10) / 10,
-      dinnerRatio: Math.round(dRatio * 10) / 10,
+      morningLunchRatio: mlRatio,
+      dinnerRatio: dRatio,
       morningLunchCount: countML,
       dinnerCount: countD,
       morningLunchAvg: mlAvg,
@@ -1219,19 +1324,23 @@ export default function App() {
     return list;
   }, [menuAbcAnalysisData, abcGradeFilter, abcSearchTerm]);
 
-  // Selected Menu Statistics
+  // Selected Menu Statistics (Guaranteed 100% parity with ABC table row)
   const selectedMenuStats = useMemo(() => {
     if (!selectedMenuName || selectedStoreId === "total") return null;
     const targetRecords = filteredSalesData.filter(r => r.storeId === selectedStoreId && r.itemName === selectedMenuName);
     if (targetRecords.length === 0) return null;
 
-    let totalSales = 0;
-    let totalQty = 0;
-    const dailyMap = {};
+    const matchedAbc = menuAbcAnalysisData.find(m => m.name === selectedMenuName);
+    if (!matchedAbc) return null;
 
+    const totalSales = matchedAbc.netSales;
+    const totalGrossSales = matchedAbc.totalSales;
+    const discount = matchedAbc.discount;
+    const totalQty = matchedAbc.quantity;
+    const storeShare = matchedAbc.sharePercent.toFixed(1);
+
+    const dailyMap = {};
     targetRecords.forEach(r => {
-      totalSales += r.netSales || 0;
-      totalQty += r.quantity || 0;
       if (r.date) {
         dailyMap[r.date] = (dailyMap[r.date] || 0) + (r.netSales || 0);
       }
@@ -1246,22 +1355,20 @@ export default function App() {
       }
     });
 
-    const dayCount = Object.keys(dailyMap).length || 1;
-    const dailyAvgQty = Math.round((totalQty / dayCount) * 10) / 10;
-    const dailyAvgSales = Math.round(totalSales / dayCount);
-
-    const storeTotal = filteredSalesData.reduce((sum, r) => sum + (r.netSales || 0), 0);
-    const storeShare = storeTotal > 0 ? ((totalSales / storeTotal) * 100).toFixed(1) : 0;
-
-    const matchedAbc = menuAbcAnalysisData.find(m => m.name === selectedMenuName);
+    // Use total operating days of the filtered store period for accurate daily average
+    const opDays = totalSummary.operatingDays > 0 ? totalSummary.operatingDays : (filteredSalesData.length > 0 ? 1 : 1);
+    const dailyAvgQty = Math.round((totalQty / opDays) * 10) / 10;
+    const dailyAvgSales = Math.round(totalSales / opDays);
 
     return {
       name: selectedMenuName,
-      category: matchedAbc?.category || targetRecords[0]?.category || "메뉴",
-      grade: matchedAbc?.grade || "A",
-      rank: matchedAbc?.rank || 1,
-      badgeStyle: matchedAbc?.badgeStyle || "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40",
+      category: matchedAbc.category || targetRecords[0]?.category || "메뉴",
+      grade: matchedAbc.grade || "A",
+      rank: matchedAbc.rank || 1,
+      badgeStyle: matchedAbc.badgeStyle || "bg-yellow-500/20 text-yellow-300 border border-yellow-500/40",
       totalSales,
+      totalGrossSales,
+      discount,
       totalQty,
       dailyAvgQty,
       dailyAvgSales,
@@ -1269,7 +1376,7 @@ export default function App() {
       peakSales,
       storeShare
     };
-  }, [selectedMenuName, selectedStoreId, filteredSalesData, menuAbcAnalysisData]);
+  }, [selectedMenuName, selectedStoreId, filteredSalesData, menuAbcAnalysisData, totalSummary.operatingDays]);
 
   // Selected Menu Trend Chart Data
   const menuTrendChartData = useMemo(() => {
@@ -1684,13 +1791,13 @@ export default function App() {
                 onClick={() => applyQuickPreset("currentMonth")}
                 className="px-2 py-1 rounded font-semibold text-indigo-400 hover:text-indigo-300 hover:bg-indigo-500/10 transition-all"
               >
-                8월 (당월)
+                {currentMonthNum}월 (당월)
               </button>
               <button
                 onClick={() => applyQuickPreset("prevMonth")}
                 className="px-2 py-1 rounded font-semibold text-slate-400 hover:text-white hover:bg-white/5 transition-all"
               >
-                7월 (전월)
+                {prevMonthNum}월 (전월)
               </button>
               <button
                 onClick={() => applyQuickPreset("all")}
@@ -1893,9 +2000,17 @@ export default function App() {
                     {formatRawWon(totalSummary.netSales)}
                   </h3>
                 </div>
-                <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-400">
-                  <span>총매출 {formatRawWon(totalSummary.totalGrossSales || totalSummary.netSales)}</span>
-                  <span className="text-rose-400 font-medium">할인 -{formatRawWon(totalSummary.discount)}</span>
+                <div className="mt-3 pt-2 border-t border-white/5 flex flex-col gap-1 text-[10px] text-slate-400">
+                  <div className="flex items-center justify-between">
+                    <span>총매출 {formatRawWon(totalSummary.totalGrossSales || totalSummary.netSales)}</span>
+                    <span className="text-rose-400 font-medium">할인 -{formatRawWon(totalSummary.discount)}</span>
+                  </div>
+                  <div className="flex items-center justify-between pt-1 border-t border-white/5">
+                    <span className="text-slate-500">전월 동기간 대비:</span>
+                    <span className={totalSummary.hasPriorData ? (totalSummary.momGrowthRate >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold") : "text-slate-500 font-medium"}>
+                      {totalSummary.momLabel}
+                    </span>
+                  </div>
                 </div>
               </div>
 
@@ -1911,8 +2026,8 @@ export default function App() {
                   </h3>
                 </div>
                 <div className="mt-3 pt-2 border-t border-white/5 flex items-center justify-between text-[10px] text-slate-400">
-                  <span>분석 영업일수</span>
-                  <span className="font-bold text-white">{totalSummary.dayCount}일 기준</span>
+                  <span>조회 {totalSummary.calendarDays}일 중</span>
+                  <span className="font-bold text-white">확인 영업 {totalSummary.operatingDays}일 기준</span>
                 </div>
               </div>
 
@@ -1934,7 +2049,7 @@ export default function App() {
                   </h3>
                 </div>
                 <div className="mt-3 pt-2 border-t border-white/5 text-[10px] text-purple-300/80 font-medium">
-                  {totalSummary.dayCount > 0 ? `일평균 ${Math.round(totalSummary.quantity / totalSummary.dayCount).toLocaleString()}개 판매` : "-"}
+                  {totalSummary.operatingDays > 0 ? `일평균 ${Math.round(totalSummary.quantity / totalSummary.operatingDays).toLocaleString()}개 판매 (영업 ${totalSummary.operatingDays}일)` : "-"}
                 </div>
               </div>
 
@@ -2034,7 +2149,13 @@ export default function App() {
                     </AreaChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="h-full flex items-center justify-center text-slate-500 text-xs">시간대별 매출 데이터가 없습니다.</div>
+                  <div className="h-full flex flex-col items-center justify-center text-slate-400 text-xs py-8">
+                    <Clock className="w-8 h-8 text-slate-500 mb-2 opacity-50" />
+                    <span className="font-semibold text-slate-300">시간대별 POS 원본 데이터 대기 중</span>
+                    <span className="text-[11px] text-slate-500 mt-1">
+                      시간대별 매출·영수건수 원본 자료가 존재하지 않아 임의 추정치 생성을 배제하고 대기 상태로 표시합니다.
+                    </span>
+                  </div>
                 )}
               </div>
 
@@ -2053,7 +2174,7 @@ export default function App() {
                   <div className="mt-3 space-y-1">
                     <p className="text-lg font-extrabold text-white">{formatRawWon(timeSlotSummary.totalMorningLunch)}</p>
                     <p className="text-[11px] text-slate-400">
-                      영수건수: <span className="text-slate-200 font-bold">{timeSlotSummary.morningLunchCount.toLocaleString()}건</span> · 평균단가: <span className="text-cyan-300 font-bold">{timeSlotSummary.morningLunchAvg.toLocaleString()}원</span>
+                      메뉴 수량: <span className="text-slate-200 font-bold">{timeSlotSummary.morningLunchCount.toLocaleString()}개</span> · 평균단가: <span className="text-cyan-300 font-bold">{timeSlotSummary.morningLunchAvg.toLocaleString()}원</span>
                     </p>
                   </div>
                 </div>
@@ -2071,7 +2192,7 @@ export default function App() {
                   <div className="mt-3 space-y-1">
                     <p className="text-lg font-extrabold text-white">{formatRawWon(timeSlotSummary.totalDinner)}</p>
                     <p className="text-[11px] text-slate-400">
-                      영수건수: <span className="text-slate-200 font-bold">{timeSlotSummary.dinnerCount.toLocaleString()}건</span> · 평균단가: <span className="text-purple-300 font-bold">{timeSlotSummary.dinnerAvg.toLocaleString()}원</span>
+                      메뉴 수량: <span className="text-slate-200 font-bold">{timeSlotSummary.dinnerCount.toLocaleString()}개</span> · 평균단가: <span className="text-purple-300 font-bold">{timeSlotSummary.dinnerAvg.toLocaleString()}원</span>
                     </p>
                   </div>
                 </div>
@@ -2386,7 +2507,7 @@ export default function App() {
                             const storeName = storeMap[selectedStoreId] || "지점";
                             setChatMessages([{
                               sender: "ai",
-                              text: `안녕하세요! **${storeName}** 전담 AI 컨설턴트입니다. 🤖\n\n현재 8월 누적 실매출액 **${formatRawWon(totalSummary.currentMonthSalesSum)}**과 시간대별 점유율(점심 ${timeSlotSummary.morningLunchRatio}% vs 저녁 ${timeSlotSummary.dinnerRatio}%)을 분석했습니다. 궁금한 점을 대화창에 편하게 질문해 주세요!`,
+                              text: `안녕하세요! **${storeName}** 전담 AI 컨설턴트입니다. 🤖\n\n현재 ${totalSummary.currentMonthLabel} 누적 실매출액 **${formatRawWon(totalSummary.currentMonthSalesSum)}**과 시간대별 점유율(점심 ${timeSlotSummary.morningLunchRatio}% vs 저녁 ${timeSlotSummary.dinnerRatio}%)을 분석했습니다. 궁금한 점을 대화창에 편하게 질문해 주세요!`,
                               time: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
                             }]);
                           }, 1800);
@@ -2504,7 +2625,7 @@ export default function App() {
                   </div>
 
                   <p className="text-[11px] text-slate-400 mt-2">
-                    남은 8월 영업일({whatIfSimulation?.remainDays}일) 동안 가격 인상이나 점심 회전율 상승 시 예상 수익 변화를 시뮬레이션합니다.
+                    남은 영업일({whatIfSimulation?.remainDays}일) 동안 가격 인상이나 점심 회전율 상승 시 예상 수익 변화를 시뮬레이션합니다.
                   </p>
 
                   <div className="space-y-4 mt-4">
@@ -2562,7 +2683,7 @@ export default function App() {
                 {whatIfSimulation && (
                   <div className="bg-[#121622] p-4 rounded-xl border border-white/5 space-y-2.5">
                     <div className="flex items-center justify-between text-xs">
-                      <span className="text-slate-400">전략 적용 후 8월 예상 매출</span>
+                      <span className="text-slate-400">전략 적용 후 당월 예상 매출</span>
                       <span className="text-base font-black text-white">
                         {formatRawWon(Math.round(whatIfSimulation.newEstSales))}
                       </span>

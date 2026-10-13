@@ -63,27 +63,39 @@ export default function OperationsAnalysisView({
   const [comparisonMode, setComparisonMode] = useState("elapsed_calendar"); // "elapsed_calendar" | "elapsed_weekday"
   const [activeMenuTab, setActiveMenuTab] = useState("matrix"); // "matrix" | "basket" | "channels"
 
-  // 1) 당월 운영 비교 KPI 산출 (기준일: 8월 26일 시점 동일 경과일 대조)
+  const latestDate = useMemo(() => {
+    let maxD = "";
+    (salesRecords || []).forEach(r => {
+      if (r.date && (!maxD || r.date > maxD)) maxD = r.date;
+    });
+    return maxD || "2026-10-12";
+  }, [salesRecords]);
+
+  const targetMonth = useMemo(() => latestDate.substring(0, 7), [latestDate]);
+  const monthNum = useMemo(() => parseInt(targetMonth.substring(5, 7), 10), [targetMonth]);
+  const cutoffDay = useMemo(() => parseInt(latestDate.substring(8, 10), 10), [latestDate]);
+
+  // 1) 당월 운영 비교 KPI 산출 (기준일: 동일 경과일 대조)
   const opsSummary = useMemo(() => {
     return computeOperationsSummary(salesRecords, {
       storeId: selectedStoreId,
-      targetMonth: "2026-08",
-      currentDateCutoff: "2026-08-26"
+      targetMonth: targetMonth,
+      currentDateCutoff: latestDate
     });
-  }, [salesRecords, selectedStoreId]);
+  }, [salesRecords, selectedStoreId, targetMonth, latestDate]);
 
   // 2) 7개 매장 실적 비교 벤치마킹 테이블
   const storeComparisonList = useMemo(() => {
-    return computeStoreComparisonTable(salesRecords, "2026-08-26");
-  }, [salesRecords]);
+    return computeStoreComparisonTable(salesRecords, latestDate);
+  }, [salesRecords, latestDate]);
 
   // 3) 메뉴 인텔리전스 (Dual ABC, Basket, 주류/사이드)
   const menuIntel = useMemo(() => {
     return computeMenuIntelligence(salesRecords, {
       storeId: selectedStoreId,
-      period: "2026-08"
+      period: targetMonth
     });
-  }, [salesRecords, selectedStoreId]);
+  }, [salesRecords, selectedStoreId, targetMonth]);
 
   return (
     <div className="space-y-6">
@@ -360,7 +372,7 @@ export default function OperationsAnalysisView({
           <div>
             <h3 className="text-base font-bold text-white flex items-center gap-2">
               <Award className="w-5 h-5 text-amber-400" />
-              7개 매장 실적 벤치마킹 비교표 (8월 1~26일 동기간 기준)
+              7개 매장 실적 벤치마킹 비교표 ({monthNum}월 1~{cutoffDay}일 동기간 기준)
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">매출액, 영업일수, 일평균, 추정 객단가, 할인율 랭킹</p>
           </div>

@@ -29,7 +29,7 @@ export const DEFAULT_ALERT_THRESHOLDS = {
 export function evaluateAnomalyAlerts(salesRecords, options = {}) {
   const {
     thresholds = DEFAULT_ALERT_THRESHOLDS,
-    referenceDate = "2026-08-26",
+    referenceDate = "2026-10-12",
     storeId = "total"
   } = options;
 
